@@ -1,8 +1,6 @@
 #include <iostream>
 #include "unp.h"
 
-extern int errno;
-
 int main(int argc, char *argv[])
 {
 
@@ -23,14 +21,13 @@ int main(int argc, char *argv[])
     ret = listen(skfd, backlog);
     assert(ret != -1);
     std::cout << "Listening..." << "\n";
-    char buff[500];
+    char buff[MAXLINE];
 
     while (true) {
         struct sockaddr_in cliaddr;
         socklen_t len;
         auto connfd = accept(skfd, (sockaddr *)&cliaddr, &len);
         std::cout << inet_ntop(AF_INET, &cliaddr.sin_addr, buff, sizeof(buff)) << " : " <<  ntohs(cliaddr.sin_port) << std::endl;
-        write(connfd, buff, strlen(buff));
         close(connfd);
     }
     close( skfd );
