@@ -8,7 +8,7 @@ int main(int args, char *argv[])
     }
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in seraddress;
-    addr_init(&seraddress, SERPORT);
+    addr_init(&seraddress, AF_INET, SERPORT);
     inet_pton(AF_INET, argv[1], &seraddress.sin_addr);
 
     connect(sockfd, (SA*)&seraddress, sizeof(seraddress));

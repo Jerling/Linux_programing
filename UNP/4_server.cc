@@ -13,7 +13,7 @@ int main()
     listenfd = socket(AF_INET, SOCK_STREAM, 0);
     // listenfd = socket(AF_INET, SOCK_DGRAM, 0);
 
-    addr_init(&servaddr, SERPORT, SERHOST);
+    addr_init(&servaddr, AF_INET, SERPORT, SERHOST);
     bind(listenfd, (SA*)&servaddr, sizeof(servaddr));
 
     listen(listenfd, 5);

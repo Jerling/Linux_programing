@@ -31,8 +31,9 @@ struct sockaddr_in{
 };
 **/
 
-inline void addr_init(struct sockaddr_in *addr, const int port, const int ip=-1) {
+inline void addr_init(struct sockaddr_in *addr, const int af, const int port, const int ip=-1) {
   bzero(addr, sizeof(addr));
+  addr->sin_family = af;
   addr->sin_port = htons(port);
   if (ip >= 0)
       addr->sin_addr.s_addr = htonl(ip);
@@ -93,9 +94,8 @@ void str_echo(int sockfd) {
 again:
     while ((n = read(sockfd, buff, MAXLINE)) > 0){
         buff[n] = '\0';
-        fputs(buff, stdout);
+        printf("received form client is %s\n", buff);
         write(sockfd, buff, n);
-        fputs(buff, stdout);
     }
     if (n < 0 && errno == EINTR)
         goto again;
@@ -108,7 +108,6 @@ void str_cli(FILE *fp, int sockfd)
     char  sendline[MAXLINE], recvline[MAXLINE];
 
     while (fgets(sendline, MAXLINE, fp) != nullptr){
-        printf("%d\n", sockfd);
         write(sockfd, sendline, strlen(sendline));
         if (read(sockfd, recvline, MAXLINE) == 0){
             printf("str_cli:server terminated prematurely\n");
