@@ -1,5 +1,6 @@
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <wait.h>
 #include <string.h>
 #include <arpa/inet.h>
 #include <stdio.h>
@@ -7,85 +8,112 @@
 #include <unistd.h>
 #include <assert.h>
 #include <errno.h>
-#include <iostream>
+#include <time.h>
+#include <utility>
 
 #define MAXLINE 1024
 #define LISTENQ 1024
 #define SERPORT 8089
 #define SERHOST INADDR_ANY
-typedef void(*callback)(int);
-typedef void(*callback_2)(FILE*, int);
+#define SA struct sockaddr
 
-static int read_cnt;
-static char *read_ptr;
-static char read_buf[MAXLINE];
+/**
+struct in_addr{
+  in_addr_t       s_addr;
+};
 
-extern int errno;
+struct sockaddr_in{
+  uint8_t         sin_len;
+  sa_family_t     sin_family;
+  in_port_t       sin_port;
+  struct in_addr  sin_addr;
+  char            sin_zero[8];
+};
+**/
 
-static ssize_t my_read(int fd, char *ptr) {
-  if(read_cnt <= 0) {
-  again:
-    if ((read_cnt = read(fd, read_buf, sizeof(read_buf))<0)) {
-      if(errno == EINTR)
-        goto again;
-      return(-1);
-    }else if(read_cnt == 0) return(0);
-    read_ptr = read_buf;
-  }
-  read_cnt--;
-  *ptr = *read_ptr++;
-  return (1);
+inline void addr_init(struct sockaddr_in *addr, const int port, const int ip=-1) {
+  bzero(addr, sizeof(addr));
+  addr->sin_port = htons(port);
+  if (ip >= 0)
+      addr->sin_addr.s_addr = htonl(ip);
 }
 
-ssize_t readline(int fd, void *vptr, size_t maxlen)
+/** 字节流套接字上调用read或write输入或输出的字节数可能比请求的数量少，
+ * 然而这不是出错的状态。这个现象的原因在于内核中用于套接字的缓冲区可能已达到极限，
+ * 此时所需的是调用者再次调用read或write函数，以输入或输出剩余的字节。
+ */
+ssize_t readn(int fd, void *vptr, size_t n)
 {
-  size_t n, rc;
-  char c, *ptr;
-  ptr = (char*)&vptr;
-  for(n=1; n<maxlen; n++)
-  {
-    if((rc = my_read(fd, &c)) == 1)
-    {
-      *ptr++ = c;
-      if(c == '\n')
-        break;
-    }else if(rc == 0)
-    {
-      *ptr = 0;
-      return(n-1);
-    }else
-      return(-1);
-  }
-  *ptr=0;
-  return(n);
+    size_t      nleft;
+    ssize_t     nread;
+    char        *ptr;
+
+    ptr = (char*)vptr;
+    nleft = n;
+    while (nleft > 0){
+        if ((nread = read(fd, ptr, nleft)) < 0){
+            if (errno == EINTR)
+                nread = 0;
+            else
+                return (-1);
+        } else if (nread == 0)
+            break;
+        nleft -= nread;
+        ptr += nread;
+    }
+
+    return (n - nleft);
 }
 
-void str_echo(int fd) {
-  ssize_t n;
-  char buff[MAXLINE];
-  while (true) {
-    while ((n = read(fd, buff, MAXLINE)) > 0) {
-      std::cout << "buff[" << n << "] = " << buff << std::endl;
-      write(fd, buff, n);
+ssize_t writen(int fd, const void *vptr, size_t n)
+{
+    size_t      nleft;
+    ssize_t     nwritten;
+    const char *ptr;
+
+    ptr = (char*)vptr;
+    nleft = n;
+    while (nleft > 0){
+        if ((nwritten = write(fd, ptr, nleft)) <= 0){
+            if (nwritten < 0 && errno == EINTR)
+                nwritten = 0;
+            else
+                return (-1);
+        }
+        nleft -= nwritten;
+        ptr += nwritten;
     }
-    if (n == 0) return;
-    if (n < 0) {
-      std::cout << "str_errno:" << strerror(errno) << std::endl;
-      exit(-1);
-    }
-}
+
+    return (n);
 }
 
-void str_cli(FILE *fp, int fd) {
-  char sendline[MAXLINE], recvline[MAXLINE];
-  while (fgets(sendline, MAXLINE, fp) != NULL) {
-    std::cout << "cliread:" << sendline << std::endl;
-    write(fd, sendline, strlen(sendline));
-    sleep(1);
-    if (readline(fd, recvline, MAXLINE) == 0) {
-      std::cout << "str_cli:" << strerror(errno) << std::endl;
-      exit(-1);
+void str_echo(int sockfd) {
+    ssize_t n;
+    char buff[MAXLINE];
+again:
+    while ((n = read(sockfd, buff, MAXLINE)) > 0){
+        buff[n] = '\0';
+        fputs(buff, stdout);
+        write(sockfd, buff, n);
+        fputs(buff, stdout);
     }
-    fputs(recvline, stdout);
-  }
+    if (n < 0 && errno == EINTR)
+        goto again;
+    else if (n < 0)
+        printf("str_echo:read error\n");
+}
+
+void str_cli(FILE *fp, int sockfd)
+{
+    char  sendline[MAXLINE], recvline[MAXLINE];
+
+    while (fgets(sendline, MAXLINE, fp) != nullptr){
+        printf("%d\n", sockfd);
+        write(sockfd, sendline, strlen(sendline));
+        if (read(sockfd, recvline, MAXLINE) == 0){
+            printf("str_cli:server terminated prematurely\n");
+            return;
+        }
+        fputs(recvline, stdout);
+    }
 }
