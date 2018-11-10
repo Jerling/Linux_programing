@@ -1,16 +1,14 @@
 * Linux_programing
-记录 UNP 学习代码笔记
-** 第三章 简单 =socket= 编程
-1. 简单的服务端程序
-   - =socket: int socket(int domain, int type, int protocol)= 获取 =socket= 的描述符(成功返回描述符，否则返回 -1)
-     - =domain: socket= 地址结构族（这里选择 =ipv4  -- AF_INET= ）
-     - =type: socket类型= （本例使用tcp的字节流 =-- SOCK_STREAM= ）
-     - =protocol:=  协议，（一般选择 =0= ）
-   - 设置监听的地址和端口( =struct sockaddr_in= )
-     - 通过 =void bzero(void *s, size_t n)= 初始化地址结构
-     - 设置 =ip: s.sin_addr = ip=
-     - 设置 =port：s.sin_por  port=
-   - 绑定: =int bind(int sockfd, struct sockaddr *my_addr, socklen_t addrlen)=
-   - 监听: =int listen(int socket, int backlog)=
-   - 运行程序并通过 =telnet ip port= 测试程序
-相关代码：[[file:UNP/conversion.cpp][conversion]] [[file:names_about.cpp][names]]
+学习笔记：
+[[file:notes/Ch01.org][UNP卷1：第一章（简介）]]
+[[file:notes/Ch03.org][UNP卷1：第三章（套接字编程简介)]]
+[[file:notes/Ch04.org][UNP卷1：第四章（基本TCP套接字编程）]]
+[[file:notes/Ch05.org][UNP卷1：第五章（TCP客户/服务器程序示例）]]
+[[file:notes/Ch06.org][UDP卷1：第六章（I/O复用：select和poll函数）]]
+[[file:notes/Ch08.org][UNP卷1：第八章（基本UNP套接字编程）]]
+[[file:notes/Ch11.org][UNP卷1：第十一章（名字与地址转换）]]
+[[file:notes/Ch13.org][UNP卷1：第十三章（守护进程和inetd超级服务器）]]
+[[file:notes/Ch15][UNP卷1：第十五章（unix域协议）]]
+[[file:notes/Ch20.org][UNP卷1：第二十章（广播）]]
+[[file:notes/Ch21.org][TCP/IP详解卷1：第一章(概述)]]
+[[file:notes/Ch22.org][TCP/IP详解卷1：第二章（链路层）]]

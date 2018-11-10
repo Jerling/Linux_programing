@@ -1,0 +1,395 @@
+* UNP卷1：第五章（TCP客户/服务器程序示例）
+** 1. 回射程序
+*** 1.1. 服务程序
+#+BEGIN_SRC C
+  #include <stdio.h>
+  #include <stdlib.h>
+  #include <time.h>
+  #include <sys/socket.h>
+  #include <sys/types.h>
+  #include <fcntl.h>
+  #include <netinet/in.h>
+  #include <errno.h>
+  #include <string.h> // for bzero
+  #include <unistd.h> // for fork
+  #include <wait.h>   // for waitpid
+
+
+  #define MAXLINE 1024
+  #define SA struct sockaddr
+
+  void str_echo(int sockfd);
+  int main(int argc, char **argv)
+  {
+      int     listenfd, connfd;
+      pid_t   pid;
+      struct  sockaddr_in servaddr;
+      struct  sockaddr_in cliaddr;
+      socklen_t   cliLen;
+      listenfd = socket(AF_INET, SOCK_STREAM, 0);
+
+      bzero(&servaddr, sizeof(servaddr));
+      servaddr.sin_family = AF_INET;
+      servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+      servaddr.sin_port = htons(9877);
+
+      bind(listenfd, (SA *)&servaddr, sizeof(servaddr));
+
+      listen(listenfd, 5);
+
+      for ( ; ; ){
+          cliLen = sizeof(cliaddr);
+          connfd = accept(listenfd, (SA *)&cliaddr, &cliLen);
+          if ((pid = fork()) == 0){
+              close(listenfd);
+              str_echo(connfd);
+              _exit(0);
+          }
+          if (waitpid(pid, NULL, 0) != pid){
+              printf("waitpid error\n");
+              exit(1);
+          }
+          close(connfd);
+      }
+
+      return 0;
+  }
+  void str_echo(int sockfd)
+  {
+      ssize_t     n;
+      char        buf[MAXLINE];
+  again:
+      while ((n = read(sockfd, buf, MAXLINE)) > 0){
+          buf[n] = '\0';
+          write(sockfd, buf, n);
+      }
+      if (n < 0 && errno == EINTR)
+          goto again;
+
+      else if (n < 0)
+          printf("str_echo:read error\n");
+  } // 维护子进程的信息，以便父进程在以后某个时候获取。这些信息包括子进程的进程ID，终止状
+#+END_SRC
+*** 1.2. 客户端
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <stdlib.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+#include <string.h>    // bzero
+#include <arpa/inet.h> // inet_pton
+#include <unistd.h>    // write read
+
+#define MAXLINE 1024
+#define SA struct sockaddr
+
+void str_cli(FILE *fp, int sockfd);
+int main(int argc, char **argv)
+{
+    int     sockfd;
+    struct  sockaddr_in servaddr;
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (argc != 2) {
+        printf("Usage %s 127.0.0.1\n", argv[0]);
+    }
+
+    bzero(&servaddr, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(9877);
+
+    inet_pton(AF_INET, argv[1], &servaddr.sin_addr);
+
+    connect(sockfd, (SA *)&servaddr, sizeof(servaddr));
+
+    str_cli(stdin, sockfd);
+    return 0;
+}
+void str_cli(FILE *fp, int sockfd)
+{
+    char        sendline[MAXLINE], recvline[MAXLINE];
+
+    while (fgets(sendline, MAXLINE, fp) != NULL){
+        write(sockfd, sendline, strlen(sendline));
+        if (read(sockfd, recvline, MAXLINE) == 0){
+            printf("str_cli:server terminated prematurely\n");
+            return;
+        }
+        fputs(recvline, stdout);
+    }
+}
+#+END_SRC
+** 2. 处理信号
+*** 2.1. POSIX 信号处理
+    信号就是告知某个进程发生了某个事件的通知，有时也称为 *软件中断* 。信号通常是 *异步* 发生的，
+也就是说进程预先不知道信号的准确发生时刻。
+
+信号可以：
+1. 由一个进程发给另一个进程。
+2. 由内核发给某个进程。
+
+每个信号都有一个与之关联的处置，也称为行为：
+1. 提供一个函数，只要有特定信号发生它就会被调用。这样的函数称为信号处理函数，这种行为称为 *捕获信号* 。
+有两个信号不能被捕获，它们是 *SIGKILL* 和 *SIGSTOP* 。信号处理函数由信号值这个单一的整数参数来调用，
+且没有返回值，其函数原型如下：
+#+BEGIN_SRC C
+void handler( int signo );
+#+END_SRC
+2. 可以把某个信号的处置设定为 *SIG_IGN* 来 *忽略* 它。 *SIGKILL* 和 *SIGSTOP* 这两个信号不能被忽略。
+3. 可以把某个信号的处置设定为 *SIG_DFL* 来启用它的默认处置。
+*** 2.2. 处理 *SIGCHLD* 信号
+    设置僵尸状态的目的是 *维护子进程的信息* ，以便父进程在以后 *某个时候* 获取。这些信息包括子进程的 *进程ID* ，
+*终止状态* 以及 *资源利用信息* 。如果一个进程终止，而该进程有子进程处于僵尸状态，那么它的所有僵尸子进程的父进程
+*ID* 将被重置为 *1（init进程）* 。继承这些子进程的 *init* 进程将清理它们。
+
+而僵尸进程出现时间是 *在子进程终止后* ，但是父进程 *尚未读取这些数据之前* 。所有解决之道就是保证父进程处理这些数据，
+可以通过 *wait* 或者 *waitpid* 函数来达到这个要求。
+
+**** 2.2.1. 服务端：
+     由于子进程的 *终止必然* 会产生信号 *SIGCHLD* 信号，所以重写 *TCP* 服务器程序最终版本：
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <netinet/in.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <signal.h>
+#include <errno.h>
+#include <string.h> // for bzero
+#include <unistd.h> // for fork
+#include <wait.h>   // for waitpid
+
+#define MAXLINE 1024
+#define SA struct sockaddr
+void sig_chld(int signo);
+typedef void Sigfunc(int);
+Sigfunc *Signal(int signo, Sigfunc *func);
+void str_echo(int sockfd);
+
+int main(int argc, char **argv)
+{
+	int		listenfd, connfd;
+	pid_t	childpid;
+	socklen_t	clilen;
+	struct	sockaddr_in	servaddr, cliaddr;
+
+	listenfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	bzero(&servaddr, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_port = htons(9877);
+	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+	bind(listenfd, (SA *)&servaddr, sizeof(servaddr));
+
+	listen(listenfd, 5);
+
+	Signal(SIGCHLD, sig_chld);
+
+	for ( ; ; ){
+		clilen = sizeof(cliaddr);
+		if ((connfd = accept(listenfd, (SA *)&cliaddr, &clilen)) < 0){
+			if (errno == EINTR)
+				continue;
+			else{
+				printf("accept error\n");
+				exit(-1);
+			}
+		}
+		if ((childpid = fork()) == 0){
+			close(listenfd);
+			str_echo(connfd);
+			exit(0);
+		}
+
+		close(connfd);
+	}
+
+	return 0;
+}
+void sig_chld(int signo)
+{
+	pid_t	pid;
+	int		stat;
+
+	while ((pid = waitpid(-1, &stat, WNOHANG)) > 0)
+		printf("child %d terminated\n", pid);
+
+	return;
+}
+Sigfunc *Signal(int signo, Sigfunc *func)
+{
+	struct	sigaction act, oact;
+	act.sa_handler = func;
+	sigemptyset(&act.sa_mask);
+	act.sa_flags = 0;
+	if (signo == SIGALRM){
+#ifdef SA_INTERRUPT
+		act.sa_flags |= SA_INTERRUPT;
+#endif
+	} else {
+		#ifdef SA_RESTART
+		act.sa_flags |= SA_RESTART;
+#endif
+	}
+
+	if (sigaction(signo, &act, &oact) < 0)
+		return (SIG_ERR);
+
+	return (oact.sa_handler);
+}
+void str_echo(int sockfd)
+{
+	char		buff[MAXLINE];
+	int			n;
+
+	for ( ; ; ){
+		if ((n = read(sockfd, buff, MAXLINE)) > 0){
+			buff[n] = '\0';
+			write(sockfd, buff, n);
+		}
+		else if (n < 0 && errno == EINTR)
+			continue;
+		else if (n < 0){
+			printf("str_echo:read error\n");
+			return;
+		}
+		else if (n == 0){
+			break;
+		}
+	}
+}
+#+END_SRC
+
+**** 2.2.2. 客户端
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <stdlib.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+#include <string.h>    // bzero
+#include <arpa/inet.h> // inet_pton
+#include <unistd.h>    // write read
+
+#define MAXLINE 1024
+#define SA struct sockaddr
+
+void str_cli(FILE *fp, int sockfd);
+int main(int argc, char **argv)
+{
+	int		sockfd[5];
+	struct	sockaddr_in	servaddr;
+	int		i;
+	for (i = 0; i < 5; i++){
+		sockfd[i] = socket(AF_INET, SOCK_STREAM, 0);
+
+		bzero(&servaddr, sizeof(servaddr));
+		servaddr.sin_family = AF_INET;
+		servaddr.sin_port = htons(9877);
+
+		inet_pton(AF_INET, argv[1], &servaddr.sin_addr);
+
+		connect(sockfd[i], (SA *)&servaddr, sizeof(servaddr));
+	}
+
+	str_cli(stdin, sockfd[0]);
+	return 0;
+}
+void str_cli(FILE *fp, int sockfd)
+{
+	char		sendline[MAXLINE], recvline[MAXLINE];
+
+	while (fgets(sendline, MAXLINE, fp) != NULL){
+		write(sockfd, sendline, strlen(sendline));
+		if (read(sockfd, recvline, MAXLINE) == 0){
+			printf("str_cli:server terminated prematurely\n");
+			return;
+		}
+		fputs(recvline, stdout);
+	}
+}
+#+END_SRC
+
+**** 2.2.3. 测试僵尸进程
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <signal.h>
+#include <sys/wait.h>
+int main( void )
+{
+	pid_t	pid;
+	if ( ( pid = fork() ) == 0 ){
+		printf("child:%d\n", getpid());
+		exit(0);
+	}
+	sleep( 20 );
+	if ( pid > 0 ){
+		printf("parent:%d\n", getpid() );
+	}
+
+	return 0;
+}
+#+END_SRC
+
+#+RESULTS:
+| child:19930  |
+| parent:19929 |
+
+在显示child:14447而尚未显示parent:14446(即20秒的睡眠时间)，执行如下命令：
+#+BEGIN_SRC bash
+ps -eo state,pid,cmd | grep '^Z'
+#+END_SRC
+发现子进程14447为僵尸进程。但是过了20秒后，再次执行时候，则没有任何数据，说明僵尸进程已经被父进程
+杀死了（就是父进程读取了子进程的数据）
+
+**** 2.2.4. 服务器进程终止
+1. 启动服务程序和客户程序
+服务端：
+#+BEGIN_SRC bash
+jer@T460P  ~  /tmp/ser
+
+#+END_SRC
+
+客户端：
+#+BEGIN_SRC bash
+jer@T460P  ~  /tmp/cli 127.0.0.1
+hello
+hello
+#+END_SRC
+
+监视端：
+#+BEGIN_SRC bash
+jer@T460P  ~  ss -a | grep 9877
+tcp   LISTEN      0        5                                            0.0.0.0:9877                                                    0.0.0.0:*
+tcp   ESTAB       0        0                                          127.0.0.1:34592
+#+END_SRC
+
+2. 终止服务程序(先终止服务器程序，然后执行监视端，再执行客户端，再执行监视端）
+服务端：
+#+BEGIN_SRC bash
+ jer@T460P  ~  /tmp/ser
+^C
+#+END_SRC
+
+监视端：
+#+BEGIN_SRC bash
+jer@T460P  ~  ss -a | grep 9877
+tcp   CLOSE-WAIT  1        0                                          127.0.0.1:34592                                                 127.0.0.1:9877
+tcp   FIN-WAIT-2  0        0                                          127.0.0.1:9877
+#+END_SRC
+客户端：
+#+BEGIN_SRC bash
+ jer@T460P  ~  /tmp/cli 127.0.0.1
+hello
+hello
+world
+str_cli:server terminated prematurely
+#+END_SRC
+监视端：（无任何输出，说明客户端进程已经终止，这里终止是产生了信号，强行终止）
+
+来自UNP上的解释是：当一个进程向某个已收到 *RST* 的套接字执行写操作时，内核向该进程发送一个 *SIGPIPE* 信号。
+该信号的默认行为是 *终止进程* ，因此进程必须捕获它以免不情愿的被终止。
+
+**** 2.2.5 3） 问题出在哪里？
+     当服务端的 *FIN* 到达套接字时，客户正阻塞于 *fgets* 调用上。客户实际上在应对两个描述符-- *套接字和用户输入* ，
+它不能单纯阻塞在这两个源中的某个特定源的输入上（正如目前编写的 *str_cli* 函数所为），而是应该阻塞在其中任何一个源的输入上，
+这正是 *select* 和 *poll* 这两个函数的目的之一。
