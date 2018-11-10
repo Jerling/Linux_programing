@@ -248,3 +248,5 @@ int main(int argc, char **argv)
     return 0;
 }
 #+END_SRC
+
+转自：[[https://www.kancloud.cn/digest/unix-fzyz-sb/168126][https://www.kancloud.cn/digest/unix-fzyz-sb/168126]]

@@ -268,4 +268,4 @@ ssize_t writen(int fd, const void *vptr, size_t n)
 }
 #+END_SRC
 
-[[https://www.kancloud.cn/digest/unix-fzyz-sb/168125][转载来自: https://www.kancloud.cn/digest/unix-fzyz-sb/168125]]
+转自：[[https://www.kancloud.cn/digest/unix-fzyz-sb/168125][ https://www.kancloud.cn/digest/unix-fzyz-sb/168125]]

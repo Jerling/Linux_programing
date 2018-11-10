@@ -393,3 +393,5 @@ str_cli:server terminated prematurely
      当服务端的 *FIN* 到达套接字时，客户正阻塞于 *fgets* 调用上。客户实际上在应对两个描述符-- *套接字和用户输入* ，
 它不能单纯阻塞在这两个源中的某个特定源的输入上（正如目前编写的 *str_cli* 函数所为），而是应该阻塞在其中任何一个源的输入上，
 这正是 *select* 和 *poll* 这两个函数的目的之一。
+
+转自：[[https://www.kancloud.cn/digest/unix-fzyz-sb/168127][https://www.kancloud.cn/digest/unix-fzyz-sb/168127]]

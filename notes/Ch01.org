@@ -111,3 +111,5 @@ int main( int argc, char **argv )
 	exit(0);
 }
 #+end_src
+
+转自：[[https://www.kancloud.cn/digest/unix-fzyz-sb/168124][https://www.kancloud.cn/digest/unix-fzyz-sb/168124]]
