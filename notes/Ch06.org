@@ -1,0 +1,436 @@
+* UDP卷1：第六章（I/O复用：select和poll函数）
+** 1. 概述
+   在第五章的 *TCP* 客户同时处理两个输入： *标准输入* 和 *TCP套接字* 。遇到的问题是在客户阻塞于 *fgets* 调用期间，
+服务器进程会被杀死。服务器 *TCP* 虽然正确的给客户 *TCP* 发送了一个 *FIN* ，但是既然客户进程正阻塞于从标准输入
+读入的过程，它将看不到这个 *EOF* ，直到从 *套接字读时为止* （可能经过很长时间）。这样的进程需要一种预先告知内核的
+能力，使得内核一旦发现进程指定的一个或多个 *I/O* 条件就绪（也就是说输入已准备好被读取，或者描述符已能承接更多的输出），
+它就通知进程。这个能力称为 *I/O复用* ，是由 *select* 和 *poll* 这两个函数支持。
+
+*I/O复用* 使用于以下场合：
+1. 当客户处理 *多个* 描述符（通常是交互式输入和网络套接字）时， *必须使用I/O复用* 。
+2. 一个客户 *同时处理* 多个套接字是可能的，不过比较少见。
+3. 如果一个 *TCP服务器* 既要处理监听套接字，又要处理已连接套接字，一般就要使用I/O复用。
+4. 如果一个服务器既要处理 *TCP* ，又要处理 *UDP* ，一般就要使用I/O复用。
+5. 如果一个服务器要处理 *多个服务或者多个协议* ，一般就要使用I/O复用。
+** 2. *I/O模型*
+   一个 *输入* 操作通常包括两个不同的阶段：
+1. 等待数据 *准备* 好
+2. 从内核向进程 *复制* 数据
+
+对于一个 *套接字上的输入* 操作，第一步通常涉及 *等待数据从网络中到达* 。当所等待分组到达时，
+它被 *复制到内核中的某个缓冲区* 。第二步就是把数据从 *内核缓冲区复制到应用进程缓冲区* 。
+*** 2.1. 阻塞式 I/O 模型
+[[https://box.kancloud.cn/2016-06-20_57678b2fe2ff0.jpg]]
+
+进程调用 *recvfrom* ，其系统调用直到 *数据报到达且被复制到应用进程的缓冲区中或者发生错误* 才返回。
+进程在从调用 *recvfrom* 开始到它返回的整段时间内饰 *被阻塞* 的。 *recvfrom* 成功返回后，应用进程开始处理数据报。
+*** 2.3. 非阻塞 I/O 模型
+[[https://box.kancloud.cn/2016-06-20_57678b3008f57.jpg]]
+
+进程把一个套接字设置成 *非阻塞* 是在通知内核：当所请求的 *I/O操作非得把本进程投入睡眠才能完成，
+不要把本进程投入睡眠* ，而是返回一个 *错误* 。
+
+当一个应用进程像这样对一个非阻塞描述符 *循环调用recvfrom* 时，称之为 *轮询* 。应用进程 *持续轮询内核* ，
+以查看某个操作 *是否就绪* 。这么做往往 *耗费大量CPU时间* 。
+*** 2.3. I/O 复用模型
+[[https://box.kancloud.cn/2016-06-20_57678b302424b.jpg]]
+
+
+阻塞于 *select 调用（而非阻塞于recvfrom处）* ，等待数据报套接字 *变为可读* 。当 *select* 返回套接字
+*可读这一条件* 时，调用 *recvfrom* 把所读数据报 *复制到应用进程缓冲区* 。使用 *select* 的优势在于
+可以 *等待多个描述符就绪* 。
+*** 2.4. 信号驱动式 I/O 模型
+[[https://box.kancloud.cn/2016-06-20_57678b303e674.jpg]]
+
+让内核在描述符 *就绪时发送SIGIO信号* 通知。
+无论如何处理 *SIGIO* 信号，这种模型的优势在于 *等待数据报到达期间进程不被阻塞* 。 *主循环可以继续执行* ，
+只要等待来自 *信号处理函数* 的通知：既可以是数据已准备好 *被处理* ，也可以是数据报已准备好被 *读取* 。
+*** 2.5. 异步 I/O 模型
+[[https://box.kancloud.cn/2016-06-20_57678b305e567.jpg]]
+
+这些函数的工作机制是： *告知内核启动某个操作* ，并让内核在整个操作（包括将 *数据从内核复制到自己的缓冲区* ）完成后通知
+** 3. select 函数
+*** 3.1 基础知识
+该函数允许进程 *指示内核等待多个事件中的任何一个发生* ，并 *只在有一个或多个事件发生或经历一段指定的时间后* 才唤醒它。
+#+BEGIN_SRC C
+#include <sys/select.h>
+#include <sys/time.h>
+int select(int maxfdp1, fd_set *readset, fd_set *writeset, fd_set *exceptset, const struct timeval *timeout );
+                // 返回：若有就绪描述符则为其数目，若超时则为0，若出错则为-1
+#+END_SRC
+作为一个例子，可以调用 *select* ，告知内核仅在下列情况发生时才返回：
+1. 集合{1,4,5}中的任何描述符准备好读
+2. 集合{2,7}中的任何描述符准备好写
+3. 集合{1,4}中的任何描述符有异常条件待处理
+4. 已经经历了10.2秒
+
+*timeout* 告知内核等待所指定描述符中的任何一个就绪可花多长时间。其 *timeval* 结构用于指定这段时间的秒数和微秒数：
+#+BEGIN_SRC C
+struct timeval{
+    long tv_sec;
+    long tv_usec;
+};
+#+END_SRC
+这个参数有以下三种可能：
+1. *永远* 等待下去：仅在有一个描述符准备好I/O时才返回。只需把这参数设置为 *空指针* 。
+2. 等待一段 *固定时间* ：在有一个描述符准备好I/O时返回，但是不超过由该参数所指向的 *timeval* 结构中指定的秒数和微秒数。
+3. 根本 *不等待* ：检查描述符后立即返回，这称为 *轮询* 。为此，该参数必须指向一个 *timeval* 结构，而且其中的定时器值必须为0.
+
+中间的三个参数 *readset* , *writeset* 和 *exceptset* 指定要让内核 *测试读，写和异常条件的描述符* 。
+
+*maxfdp1* 参数指定待测试的 *描述符个数* ，它的值是待测试的 *最大描述符加1* .
+
+关于 *fd_set* 结构体数据四个关键的宏：
+#+BEGIN_SRC C
+void FD_ZERO( fd_set *fset );
+void FD_SET( int fd, fd_set *fdset );
+void FD_CLR( int fd, fd_set *fdset );
+int FD_ISSET( int fd, fd_set *fset );
+#+END_SRC
+
+假设要将描述符1（对应于stdout，标准输出），4,5（分别对应 *socket* 中服务器  *socket描述符*
+和客户端的一个 *socket描述符* ）放入 *select* 函数中，当任何一个写就绪时候就返回，那么大概可以这样写：
+#+BEGIN_SRC C
+fd_set rset;
+FD_ZERO( &rset );
+FD_SET( 1, &rset );
+FD_SET( 4, &rset );
+FD_SET( 5, &rset );
+select( maxfdp1, NULL, &rset, NULL,NULL);
+#+END_SRC
+
+描述符集的 *初始化非常重要* ，因为作为自动变量分配的一个描述符集如果没有初始化，那么可能发生不可预期的后果。
+
+测试用例：
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <time.h>
+
+int main(int argc, char **argv)
+{
+	fd_set	rset;
+	FD_ZERO(&rset);
+	FD_SET(1, &rset);
+	FD_SET(4, &rset);
+	FD_SET(5, &rset);
+
+	return 0;
+}
+#+END_SRC
+
+调试程序查看reset:
+#+BEGIN_SRC bash
+(gdb) p rset
+$3 = {__fds_bits = {50, 0 <repeats 15 times>}}
+(gdb) p rset.__fds_bits
+$4 = {50, 0 <repeats 15 times>}
+#+END_SRC
+其中, 50=110010, 即第 1, 4 , 5 均被设置为 1.
+*** 3.2. 描述符就绪条件
+1. 满足下列四个条件中的任何一个时，一个套接字 *准备好读* （即可从描述符中读取数据）
+a) 该套接字 *接收缓冲区中的数据字节数大于等于套接字接收缓冲区低水位标记的当前大小* 。
+对这样的套接字执行读操作不会阻塞并将返回一个大于0的值（也就是返回准备好读入的数据，即进程可以从缓冲区中读取数据）
+
+b) 该连接的 *读半部关闭* （也就是接收了 *FIN的TCP连接* ）。对这样的套接字的读操作将不阻塞并返回0
+（因为这时候服务器执行 *close* 套接字需要一段时间，而这段时间内，客户端 *可继续从服务器读取数据* ，
+只是读取的是 *EOF* 而已）
+
+c) 该套接字是一个 *监听套接字且已完成的连接数不为0* .（这样服务端才能执行 *accepti* 函数，读取客户端发送过来的数据）
+
+d) 其上 *有一个套接字错误待处理i* 。对这样的套接字的 *读操作将不阻塞并返回-1* ，同时把 *errno* 设置成确切的错误条件。
+
+2. 满足下列四个条件中的任何一个时，一个套接字 *准备好写* （即可向描述符中写入数据）
+a) 该套接字 *发送缓冲区中的可用空间字节数大于等于套接字发送缓冲区低水位标记的当前大小* ，
+并且或者该套接字 *已连接* ，或者该套接字 *不需要连接* 。
+
+b) 该连接的 *写半部关闭* 。对这样的套接字的写操作将产生 *SIGPIPE* 信号。
+（就是如果服务器不启动，而客户端启动向服务器发送数据，则服务端向客户端发送 *RST* ，并且向客户端写入数据
+（相当于客户端读取数据），则产生 *SIGPIPE* 信号，进程强行终止）
+
+c) 使用非阻塞式 *connect* 的套接字已建立连接，或者 *connect* 已经以失败告终。（只有成功 *connect* ，才能进行数据的写入）
+
+d) 其上有一个套接字 *错误待处理* 。
+   注意：当某个套接字上发生错误时，它将由 *select* 标记为 *即可读又可写* 。
+   接收低水位标记和发送低水位标记的目的在于：允许应用进程控制在 *select* 返回可读或可写条件之前有多少数据可读或有多大空间可用于写。
+举例来说，如果知道 *除非至少存在64个字节* 的数据，否则应用进程没有任何有效工作可做，那么可以把接收低水位标记设置为64，
+以防少于64个字节的数据准备好读时 *select* 唤醒。
+
+3. 使用 *select* 的 *str_cli* 函数的实现
+
+客户的套接字上的三个条件处理如下：
+
+（1）如果对端 *TCP发送数据* ，那么该套接字 *变为可读* ，并且 *read返回一个大于0的值（即读入数据的字节数）*
+
+（2）如果对端 *TCP发送一个FIN（对端进程终止）* ，那么该套接字 *变为可读* ，并且 *read返回0（EOF）* 。
+
+（3）如果对端 *TCP发送一个RST（对端主机崩溃并重新启动）* ，那么该套接字 *变为可读* ，并且 *read返回-1* ，
+而 *errno中含有确切的错误码* 。
+#+BEGIN_SRC C
+void str_cli( FILE *fp, int sockfd )
+{
+    int     maxfdp1;
+    fd_set  rset;
+    char    sendline[ MAXLINE ], recvline[ MAXLINE ];
+
+    FD_ZERO(&rset);
+    for( ; ; ){
+        FD_SET(fileno(fp), &rset);
+        FD_SET(sockfd, *rset);
+        maxfdp1 = max(fileno(fp), sockfd) + 1;
+        select(maxfdp1, &rset, NULL, NULL, NULL);
+
+        if ( FD_ISSET(sockfd,&rset)){
+            if ( Readline(sockfd, recvline, MAXLINE) == 0)
+                err_quit("str_cli:server terminated prematurely");
+            Fputs(recvline, stdout);
+        }
+
+        if ( FD_ISSET(fileno(fp), &rset)){
+            if ( Fgets(sendline, MAXLINE, fp) == NULL)
+                return;
+            Writen(sockfd, sendline, strlen(sendline));
+        }
+    }
+}
+#+END_SRC
+
+4. 使用 *select* 版本的 *str_cli* 函数仍不正确，但问题出在哪里
+
+如果批量输入的情况下，对标准输入中的 *EOF* 的处理： *str_cli* 函数就此返回到 *main* 函数，
+而 *main* 函数随后终止。然而在批量方式下，标准输入中的 *EOF* 并不意味着同时也完成了从套接字的读入；
+可能仍有请求在去往服务器的路上，或者仍有应答在返回客户的路上。
+
+（1）在 *fgets* 函数处返回单个输入行写给服务器，随后 *select* 再次被调用以等待新的工作，
+而不管 *stdio* 缓冲区中还有 *额外的输入行待消费* 。究其原因在于 *select* 不知道 *stdio* 使用了
+*缓冲区* ---它只是从 *read* 系统调用的角度指出是否有数据可读，而不是从 *fgets* 之类调用的角度考虑。
+
+（2）而在 *readline* 调用中，这回 *select* 不可见的数据不是隐藏在 *stdio* 缓冲区，而是隐藏在 *readline*
+自己的缓冲区中。所以也可能导致 *程序终止时缓冲区中还有未读取的数据* 。
+*** 3.3. shutdown函数，poll函数以及TCP回射服务器程序的修订版
+**** 3.3.1. shutdown函数
+终止网络连接的通常方法是调用 *close* 函数，不过 *close* 有两个限制，却可以使用 *shutdown* 来避免：
+
+（1） *close* 把描述符的引用计数减1，仅在该 *计数变为0时才关闭套接字* 。使用 *shutdown* 可以不管引用计数就激发
+*TCP* 的正常连接终止序列。
+
+（2） *close* 终止读和写两个方向的数据传送。这导致有些数据存于缓冲区内，并未被发送/接收成功。
+
+#+BEGIN_SRC C
+#include <sys/socket.h>
+int shutdown( int sockfd, int howto );
+                      // 返回：若成功则为0，若出错则为-1
+#+END_SRC
+
+该函数依赖于howto参数的值：
+
+- *SHUT_RD* :关闭连接的 *读这一半* ----套接字中 *不再有数据可接收* ，而且套接字接收缓冲区中的现有数据都被丢弃。
+进程不能再对这样的套接字调用任何读函数。对一个 *TCP* 套接字这样调用 *shutdown* 函数后，由该套接字接收的来自
+对端的任何数据都被确认，然后悄然丢弃。
+
+- *SHUT_WR* :关闭连接的 *写这一半* ----对于 *TCP* 套接字，这称为 *半关闭* 。当前留在套接字发送缓冲区中的数据将被发送掉，
+后跟 *TCP* 的正常连接终止序列。
+
+- *SHUT_RDWR*:连接的读半部和写半部 *都关闭* ----这与调用 *shutdown* 两次等效：第一个调用指定 *SHUT_RD*,
+第二次调用指定 *SHUT_WR*
+**** 3.3.2 str_cli函数修订版
+（1）使用 *read* 和 *write* 函数处理 *缓冲区而非文本* ，可以保证缓冲区的数据完全的读取。
+
+（2）如果执行了 *err_quit* 函数，则说明服务器过早的终止。
+
+（3）使用 *shutdown(sockfd,SHUT_WR)* 的作用是：终止写入，并且把缓冲区所有的数据全部发送出去
+#+BEGIN_SRC C
+void str_cli( FILE *fp, int sockfd )
+{
+    int     maxfdp1, stdineof;
+    fd_set  rset;
+    char    buf[ MAXLINE ];
+    int     n;
+
+    stdineof = 0;
+    FD_ZERO(&rset);
+    for( ; ; ){
+        if ( stdineof == 0 )
+                FD_SET(fileno(fp), &rset);
+        FD_SET(sockfd, *rset);
+        maxfdp1 = max(fileno(fp), sockfd) + 1;
+        select(maxfdp1, &rset, NULL, NULL, NULL);
+
+    /*read和write是对缓冲区进行操作*/
+        if ( FD_ISSET(sockfd,&rset)){
+            if ( ( n = Read(sockfd,buf,MAXLINE)) == 0){
+                if ( stdineof == 1 )
+                    return;
+                else
+                    err_quit("str_cli:server terminated prematurely");
+            }
+            Write(fileno(stdout),buf,n);
+        }
+
+        if ( FD_ISSET(fileno(fp), &rset)){
+    //说明数据已经从缓冲区中读取完毕，即全部数据都发送给进程
+            if ( (n = Read(fileno(fp), buf, MAXLINE)) == 0){
+                stdineof = 1;
+                Shutdown(sockfd,SHUT_WR);
+                FD_CLR(fileno(fp),&rset);
+                continue;
+            }
+    //因为执行了Shutdown(sockfd,SHUT_WR);说明所有存在缓冲区的数据，均被发送到了sockfd
+            Writen(sockfd, sendline, strlen(sendline));
+        }
+    }
+}
+#+END_SRC
+**** 3.3.3 TCP回射服务器程序（修订版）
+- 服务端：
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <errno.h>
+#include <sys/select.h>
+#include <string.h> // bzero
+#include <unistd.h>
+
+
+#define MAXLINE 1024
+#define SA struct sockaddr
+
+int main(int argc, char **argv)
+{
+    int     i, maxi, maxfd, listenfd, connfd, sockfd;
+    int     nready, client[FD_SETSIZE];
+    ssize_t n;
+    fd_set  rset, allset;
+    char    buf[MAXLINE];
+    socklen_t   clilen;
+    struct  sockaddr_in cliaddr, servaddr;
+
+    listenfd = socket(AF_INET, SOCK_STREAM, 0);
+
+    bzero(&servaddr, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_port = htons(9877);
+
+    bind(listenfd, (SA *)&servaddr, sizeof(servaddr));
+
+    listen(listenfd, 5);
+
+    maxfd = listenfd;
+    maxi = -1;
+    for (i = 0; i < FD_SETSIZE; i++)
+        client[i] = -1;
+    FD_ZERO(&allset);
+    FD_SET(listenfd, &allset);
+
+    for ( ; ; ){
+        rset = allset;
+        nready = select(maxfd + 1, &rset, NULL, NULL, NULL);
+
+        if (FD_ISSET(listenfd, &rset)){
+            clilen = sizeof(cliaddr);
+            connfd = accept(listenfd, (SA *)&cliaddr, &clilen);
+
+            for (i = 0; i < FD_SETSIZE; i++)
+                if (client[i] < 0){
+                    client[i] = connfd;
+                    break;
+                }
+            if (i == FD_SETSIZE){
+                printf("too many clients\n");
+                exit(-1);
+            }
+            FD_SET(connfd, &allset);
+            if (connfd > maxfd)
+                maxfd = connfd;
+            if (i > maxi)
+                maxi = i;
+            if (--nready <= 0)
+                continue;
+        }
+
+        for (i = 0; i <= maxi; i++){
+            if ((sockfd = client[i]) < 0)
+                continue;
+            if (FD_ISSET(sockfd, &rset)){
+                if ((n = read(sockfd, buf, MAXLINE)) == 0){
+                    close(sockfd);
+                    FD_CLR(sockfd, &allset);
+                    client[i] = -1;
+                } else
+                    write(sockfd, buf, n);
+                if (--nready <= 0)
+                    break;
+            }
+        }
+    }
+}
+#+END_SRC
+
+- 客户端：
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <stdlib.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+#include <string.h> // bzero
+#include <arpa/inet.h> // inet_pton
+#include <unistd.h> // read ...
+
+#define MAXLINE 1024
+#define SA struct sockaddr
+
+void str_cli(FILE *fp, int sockfd);
+int main(int argc, char **argv)
+{
+    int     sockfd[5];
+    struct  sockaddr_in servaddr;
+    int     i;
+    for (i = 0; i < 5; i++){
+        sockfd[i] = socket(AF_INET, SOCK_STREAM, 0);
+
+        bzero(&servaddr, sizeof(servaddr));
+        servaddr.sin_family = AF_INET;
+        servaddr.sin_port = htons(9877);
+
+        inet_pton(AF_INET, argv[1], &servaddr.sin_addr);
+
+        connect(sockfd[i], (SA *)&servaddr, sizeof(servaddr));
+    }
+
+    str_cli(stdin, sockfd[0]);
+    return 0;
+}
+void str_cli(FILE *fp, int sockfd)
+{
+    char        sendline[MAXLINE], recvline[MAXLINE];
+    int         n;
+    while (fgets(sendline, MAXLINE, fp) != NULL){
+        write(sockfd, sendline, strlen(sendline));
+        if (( n = read(sockfd, recvline, MAXLINE)) == 0){
+            printf("str_cli:server terminated prematurely\n");
+            return;
+        }
+        recvline[n] = '\0';
+        fputs(recvline, stdout);
+    }
+}
+#+END_SRC
+
+- 程序输出：
+  - 服务端：
+#+BEGIN_SRC bash
+ jer@T460P  ~  /tmp/ser
+#+END_SRC
+
+   - 客户端：
+#+BEGIN_SRC bash
+jer@T460P  ~  /tmp/cli 127.0.0.1
+hello unix
+hello unix
+#+END_SRC
+
+转自：[[https://www.kancloud.cn/digest/unix-fzyz-sb/168128][https://www.kancloud.cn/digest/unix-fzyz-sb/168128]]
