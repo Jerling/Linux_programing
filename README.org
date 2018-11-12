@@ -11,7 +11,7 @@
 
 [[file:notes/Ch06.org][UDP卷1：第六章（I/O复用：select和poll函数）]]
 
-[[file:notes/Ch08.org][UNP卷1：第八章（基本UNP套接字编程）]]
+[[file:notes/Ch08.org][UNP卷1：第八章（基本UDP套接字编程）]]
 
 [[file:notes/Ch11.org][UNP卷1：第十一章（名字与地址转换）]]
 
