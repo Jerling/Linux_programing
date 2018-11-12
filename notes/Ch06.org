@@ -208,8 +208,31 @@ void str_cli( FILE *fp, int sockfd )
 
 （2）而在 *readline* 调用中，这回 *select* 不可见的数据不是隐藏在 *stdio* 缓冲区，而是隐藏在 *readline*
 自己的缓冲区中。所以也可能导致 *程序终止时缓冲区中还有未读取的数据* 。
-*** 3.3. shutdown函数，poll函数以及TCP回射服务器程序的修订版
-**** 3.3.1. shutdown函数
+*** 3.3. pselect 函数
+#+BEGIN_SRC C
+#include <sys/select.h>
+#include <signel.h>
+#include <time.h>
+int pselect(int maxfdpl, fd_set *readset, fd_set, *writeset, fd_set *exceptset,
+            const struct timespec *timeout, const sigset_t *sigmask);
+            // 返回：若有就绪描述符则为其数目， 超时返回 0， 出错返回 -1.
+#+END_SRC
+
+*pselect* 与 *select* 的不同：
+1. *pselect* 使用 *timespec* 结构，而不是使用 *timeval* 结构。
+#+BEGIN_SRC C
+  struct timesepce {
+      time_t tv_sec; /* seconds */
+      long tv_nsec;  /* nanoseconds */
+  }
+#+END_SRC
+
+2. *pselect* 增加第六个参数： 一个指向信号掩码的指针， 该参数允许程序先禁止递交某些信号，
+再测试由这些当前被禁止信号的信号处理函数设置的全局变量，然后调用 *pselect* ，告诉它重新设置
+信号掩码。
+
+** 4. shutdown函数
+**** 4.1. shutdown函数
 终止网络连接的通常方法是调用 *close* 函数，不过 *close* 有两个限制，却可以使用 *shutdown* 来避免：
 
 （1） *close* 把描述符的引用计数减1，仅在该 *计数变为0时才关闭套接字* 。使用 *shutdown* 可以不管引用计数就激发
@@ -234,7 +257,7 @@ int shutdown( int sockfd, int howto );
 
 - *SHUT_RDWR*:连接的读半部和写半部 *都关闭* ----这与调用 *shutdown* 两次等效：第一个调用指定 *SHUT_RD*,
 第二次调用指定 *SHUT_WR*
-**** 3.3.2 str_cli函数修订版
+**** 4.2 str_cli函数修订版
 （1）使用 *read* 和 *write* 函数处理 *缓冲区而非文本* ，可以保证缓冲区的数据完全的读取。
 
 （2）如果执行了 *err_quit* 函数，则说明服务器过早的终止。
@@ -282,7 +305,32 @@ void str_cli( FILE *fp, int sockfd )
     }
 }
 #+END_SRC
-**** 3.3.3 TCP回射服务器程序（修订版）
+** 5. poll函数
+#+BEGIN_SRC C
+  #include <poll.h>
+  int poll(struct pollfd *fdarray, unsigned long nfds, int timeout);
+// 返回：若有就绪描述符则为其数目， 超时返回0, 出错返回 -1
+#+END_SRC
+
+参数说明：
+1. *pollfd*  结构：
+#+BEGIN_SRC C
+struct pollfd{
+    int fd;
+    short events;
+    short revents;
+}
+#+END_SRC
+*events* 指定测试条件， *revents* 返回该描述符的状态。
+
+1. *nfds* 结构数组元素的个数
+
+2. *timeout* 等待多长时间
+   - INFTIM: 永远等待
+   - 0: 立即返回，不阻塞进程
+   - >0: 等待指定的数值的毫秒数
+
+** 6. TCP回射服务器程序（修订版）
 - 服务端：
 #+BEGIN_SRC C
 #include <stdio.h>
