@@ -1,0 +1,94 @@
+* UNP卷1：基本SCTP套接字编程
+
+** 1. 概述
+    SCTP是一个较新的传输协议，于200U年在IETF得到标准化(而TCP是在1981年标准化的)。
+它最初是为满足不断增长的IP电话市场设计的，具体地说就是穿越因特网传输电话信令。SCTP是一个一可靠的面向消息的协议，在
+端点之间提供多个流，并为多宿提供传输级支持。既然是一个较新的传输协议，它没有TCP或UDP那样无处不在，然而它提供了一些
+有可能简化特定应用程序设计的新特性。
+
+** 2. 接口模型
+- 一到一: 类似 *TCP*
+- 一到多: 一个给定套接字上可以有多个活跃的 *SCTP* 关联
+- 使用某个接口要考虑的问题
+  - 迭代还是并发
+  - 服务器希望管理多少套接字描述符
+  - 优化关联建立的四路握手，使得在第三或第四个分组交换用户数据是否重要
+  - 应用进程希望维护多少连接状态
+
+*** 2.1. 一到一
+- 目的： 方便将现有的 *TCP* 应用程序移植到 *SCTP* 上
+- 与 *TCP* 的区别：
+  1. *TCP* 套接字选项必须转换成等效的 *SCTP* 套接字选项。两个较常见的选项是 *TCP_NODELAY* 和 *TCPMAXSEG* ,应该映射成 *SCTP_NODFELAY* 和 *SCTP_MAXSEG*
+  2. *SCTP* 保存消息边界，应用层消息边界并非必需。
+  3. 有些 *TCP* 应用进程使用半关闭来告知对端去往它的数据流已经结束。将这样的应用程序移植到 *SCTP* 需要额外垂写应用层协议，让应用进程在应用数据流中告知对端该传输数据流已经结束。
+  4. *send* 函数能够以普通方式使用。使用 *sendto* 或 *sendmsg* 函数时，指定的任何地址都被认为是对目的地主地址的重写。
+
+*** 2.2. 一到多
+- 好处： 编写服务程序无需管理大量的套接字描述符
+
+** 3. sctp_bindx 函数
+   *SCTP* 希望绑定主机系统相关 *IP* 地址的子集， *TCP* 和 *UDP* 绑定主机的某个地址或所有地址，不能绑定子集。
+#+BEGIN_SRC C
+#include <netinet/sctp.h>
+int sctp_bindx(int, sockfd, const struct sockaddr *addrs, int addcnt, int flags);
+                // 成功返回0， 出错返回-1
+#+END_SRC
+
+- *addrs* ： 连续的套接字结构块，中间没有填充的
+- *addcnt*： 地址个数
+- *flags* ： 操作
+  - SCTP_BINDX_ADD_ADDR: 添加地址
+  - SCTP_BINDX_REM_ADDR: 删除地址
+
+** 4. sctp_connectx 函数
+#+BEGIN_SRC C
+#include <netinet/sctp.h>
+int sctp_connectx(int sockfd, const struct sockaddr *addrs, int addcnt)
+// 成功返回0， 出错返回-1
+#+END_SRC
+
+     *sctp_connectx* 函数用于连接到一个多宿对端主机。该函数在 *addrs* 参数中指定 *addrcnt* 个全
+部属于 *同一对端* 的地址。 SCTP栈使用其中一个或多个地址建立关联。列在 *addrs* 参数中的所有地址都被认为
+是有效的经过证实的地址。
+
+** 5. sctp_getpaddrs 函数
+   之前的 *getpeername* 用于 *SCTP* 时仅仅返回主目的地址， *sctp_getpaddrs* 返回对端所有地址
+#+BEGIN_SRC C
+#include <netinet/sctp.h>
+int sctp_getpaddrs(int sockfd, sctp_assoc_t id, struct **addrs)
+// 成功返回在 addr 中存放对端地址数， 出错返回-1
+#+END_SRC
+
+*id* 参数是一到多套接字的关联标识，一到一会忽略该字段
+
+** 6. sctp_freeaddrs函数
+   释放由 *sctp_getpaddrs* 函数分配的资源
+#+BEGIN_SRC C
+#include <netinet/sctp.h>
+void sctp_freeaddrs(struct sockaddr *addrs)
+#+END_SRC
+
+** 7. sctp_getladdrs 函数
+   用于获取某个关联的本地地址
+#+BEGIN_SRC C
+#include <netinet/sctp.h>
+int sctp_getladdrs(int sockfd, sctp_assoc_t id, struct sockaddr **addrs)
+// 成功返回在 addr 中存放对端地址数， 出错返回-1
+#+END_SRC
+
+
+** 8. sctp_freeladdr函数
+   函数原型、用法和 *sctp_freeaddrs* 函数一样
+
+** 9. 其它相关函数
+- *sctp_sendmsg*
+- *sctp_recvmsg*
+- *sctp_opt_info*
+- *sctp_peeloff*: 用于从一到多套接字中抽取一个关联构成一到一套接字
+#+BEGIN_SRC C
+#include <netinet/sctp.h>
+int sctp_peeloff(int sockfd, sctp_assoc_t id);
+// 成功返回一个新的套接字，出错返回-1
+#+END_SRC
+
+- *shutdown* 函数
