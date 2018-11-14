@@ -1,0 +1,527 @@
+* UNP卷1：第十一章（名字与地址转换）
+
+** 1. gethostbyname 函数
+#+BEGIN_SRC C
+#include <netdb.h>
+struct hostent *gethostbyname( const char *hostname );
+              //  返回：若成功则为非空指针，若出错则为NULL且设置h_errno
+#+END_SRC
+
+*hostent* 的结构如下：
+#+BEGIN_SRC C
+struct hostent{
+    char    *h_name;
+    char    *h_aliases;
+    int        h_addrtype;
+    int        h_length;
+    char    **h_addr_list;
+};
+#+END_SRC
+例子：
+#+BEGIN_SRC C
+  #include <netdb.h>
+  #include <stdio.h>
+  #include <stdlib.h>
+
+
+  int main( int argc, char **argv )
+  {
+      char    *ptr, **pptr;
+      struct  hostent *hptr;
+
+      while ( --argc > 0 ){
+          ptr = *++argv;
+          if ( ( hptr = gethostbyname( ptr ) ) == NULL ){
+              printf("gethostbyname error for host:%s:%s\n", ptr, hstrerror( h_errno ) );
+              continue;
+          }
+          printf("official hostname:%s\n", hptr->h_name );
+          for ( pptr = hptr->h_aliases; *pptr != NULL; pptr++ )
+              printf("\talias:%s\n", *pptr );
+          switch( hptr->h_addrtype ){
+          case AF_INET:
+              pptr = hptr->h_addr_list;
+              for ( ; *pptr != NULL; pptr++ )
+                  printf("\taddress name:%s\n", *pptr );
+               //  printf("\taddress:%s\n", inet_ntop( hptr->h_addrtype, *pptr, str, sizeof(str)));
+              break;
+          default:
+              printf("unknown address type");
+              break;
+          }
+      }
+
+      exit(0);
+  }
+#+END_SRC
+
+程序输出：
+#+BEGIN_SRC bash
+jer@T460p  ~  /tmp/a.out www.baidu.com
+official hostname:www.a.shifen.com
+	alias:www.baidu.com
+	address name:wK�www.wK�mifen.com
+	address name:wK�mifen.com
+#+END_SRC
+
+
+** 2. 测试 inet_ntop 和 inet_pton
+
+#+BEGIN_SRC C
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <stdio.h>
+#include <arpa/inet.h>
+
+#define SERV_PORT 9877
+#define SA struct sockaddr
+
+int main( void )
+{
+    char ptr[] = "127.0.0.1";
+    char str[ 1024 ];
+    struct sockaddr_in  servaddr;
+
+    bzero( &servaddr, sizeof( servaddr ) );
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons( SERV_PORT );
+    inet_pton( AF_INET, ptr, &servaddr.sin_addr);
+
+    inet_ntop( AF_INET, ( SA * )&servaddr.sin_addr, str, sizeof( str ) );
+
+    printf("%s\n", str );
+    return 0;
+}
+#+END_SRC
+程序输出：
+#+BEGIN_SRC bash
+ jer@T460p  ~  /tmp/a.out
+127.0.0.1
+ jer@T460p  ~ 
+#+END_SRC
+
+** 3. getservbyname 和 getservbyport函数
+一个根据给定 *名字* 查找相应服务，一个给定 *端口号和可选协议* 查找相应服务。
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <netdb.h>
+
+int main( int argc, char **argv )
+{
+    struct servent  *sptr;
+
+    sptr = getservbyname( "domain", "udp" );
+    sptr = getservbyname( "ftp", "tcp" );
+    sptr = getservbyname( "ftp", "NULL" );
+    sptr = getservbyname( "ftp", "udp" );
+
+    sptr = getservbyport( htons( 53 ), "udp" );
+    sptr = getservbyport( htons( 21 ), "tcp" );
+    sptr = getservbyport( htons( 21 ), "NULL" );
+    sptr = getservbyport( htons( 21 ), "udp" );
+
+    return 0;
+}
+#+END_SRC
+
+程序输出：
+#+BEGIN_SRC C
+(gdb) break 8
+Breakpoint 1 at 0x4005dc: file getservbynameport.c, line 8.
+(gdb) r
+Starting program: /home/leichaojian/getservbynameport
+
+Breakpoint 1, main (argc=1, argv=0x7fffffffde58) at getservbynameport.c:8
+8		sptr = getservbyname( "domain", "udp" );
+(gdb) n
+9		sptr = getservbyname( "ftp", "tcp" );
+(gdb) p *sptr
+$1 = {s_name = 0x602010 "domain", s_aliases = 0x602020, s_port = 13568, s_proto = 0x60201b "udp"}
+(gdb) n
+10		sptr = getservbyname( "ftp", "NULL" );
+(gdb) p *sptr
+$2 = {s_name = 0x602010 "ftp", s_aliases = 0x602020, s_port = 5376, s_proto = 0x602018 "tcp"}
+(gdb) n
+11		sptr = getservbyname( "ftp", "udp" );
+(gdb) p *sptr
+Cannot access memory at address 0x0
+(gdb) n
+13		sptr = getservbyport( htons( 53 ), "udp" );
+(gdb) p *sptr
+Cannot access memory at address 0x0
+(gdb) n
+14		sptr = getservbyport( htons( 21 ), "tcp" );
+(gdb) p *sptr
+$3 = {s_name = 0x603290 "domain", s_aliases = 0x6032a0, s_port = 13568, s_proto = 0x60329b "udp"}
+(gdb) n
+15		sptr = getservbyport( htons( 21 ), "NULL" );
+(gdb) p *sptr
+$4 = {s_name = 0x603290 "ftp", s_aliases = 0x6032a0, s_port = 5376, s_proto = 0x603298 "tcp"}
+(gdb) n
+16		sptr = getservbyport( htons( 21 ), "udp" );
+(gdb) p *sptr
+Cannot access memory at address 0x0
+(gdb) n
+18		return 0;
+#+END_SRC
+
+
+** 4. getaddrinfo 函数
+此函数可用来代替 *gethostbyname* 和 *gethostbyaddr*
+#+BEGIN_SRC C
+#include <netdb.h>
+int getaddrinfo( const char *hostname, const char *service, const struct addrinfo *hints, struct addrinfo **result );
+           // 返回：若成功则为0，若出错则为非0
+#+END_SRC
+
+参数1为主机名或地址串（点分十进制数串）， *service* 参数是一个服务名或十进制端口号数串， *hints* 目前就直接置为NULL，而 *result* 则是我们需要的信息：
+#+BEGIN_SRC C
+struct addrinfo{
+	int	ai_flags;
+	int	ai_family;
+	int	ai_socktype;
+	int	ai_addrlen;
+	socklen_t	ai_addrlen;
+	char	*ai_canonname;
+	struct sockaddr *ai_addr;
+	struct addrinfo *ai_next;
+};
+#+END_SRC
+
+测试用例：
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+
+int main( int argc, char **argv )
+{
+	struct addrinfo hints, *res;
+	struct sockaddr_in	*addr;
+	char	str[ 1024 ];
+	getaddrinfo( "ThinkPad-T430i", "domain", NULL, &res );
+	for ( ;res->ai_next;res = res->ai_next ){
+		printf("ai_falgs:%d\n", res->ai_flags);
+		printf("ai_family:%d\n", res->ai_family);
+		printf("ai_socktype:%d\n", res->ai_socktype);
+		printf("ai_addrlen:%d\n", res->ai_addrlen);
+		printf("ai_canonname:%s\n", res->ai_canonname);
+
+		addr = ( struct sockaddr_in * )res->ai_addr;
+		printf("sin_family:%d\n", addr->sin_family);
+		printf("sin_port:%d\n", ntohs( addr->sin_port ) );
+		inet_ntop( addr->sin_family, &addr->sin_addr, str, sizeof( str ) );
+		printf("sin_addr:%s\n", str);
+	}
+
+	return 0;
+}
+#+END_SRC
+
+程序输出：
+#+BEGIN_SRC bash
+jer@T460p  ~  /tmp/a.out
+ai_falgs:1
+ai_family:0
+ai_socktype:-1505131141
+ai_addrlen:0
+ai_canonname:USER=jer
+sin_family:17496
+sin_port:18271
+sin_addr:jI��
+ai_falgs:1196310860
+ai_family:1600682557
+ai_socktype:1429098051
+ai_addrlen:1195661312
+[1]    78279 segmentation fault  /tmp/a.out
+#+END_SRC
+
+** 5. 使用getaddrinfo来完成TCP时间获取服务器程序
+
+*** 5.1. 客户程序
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#define MAXLINE 1024
+
+int tcp_connect( const char *host, const char *serv );
+
+int main( int argc, char **argv )
+{
+    int     sockfd, n;
+    char    recvline[ MAXLINE + 1 ];
+    socklen_t   len;
+    struct sockaddr_in  cliaddr;
+
+    if ( argc != 3 ){
+        printf("argument should be 3\n");
+        exit(1);
+    }
+    sockfd = tcp_connect( argv[1], argv[2]);
+
+    len = sizeof( cliaddr );
+    getpeername( sockfd, ( struct sockaddr * )&cliaddr, &len );
+    inet_ntop( AF_INET, &cliaddr.sin_addr, recvline, sizeof( recvline ) );
+    printf("connect to %s\n", recvline);
+
+    while ( ( n = read( sockfd, recvline, MAXLINE )) > 0 ){
+        recvline[ n ] = 0;
+        fputs( recvline, stdout );
+    }
+
+    exit( 0 );
+}
+int tcp_connect( const char *host, const char *serv )
+{
+    int     sockfd, n;
+    struct  addrinfo hints, *res, *ressave;
+    struct  sockaddr_in *cliaddr;
+
+    bzero( &hints, sizeof( struct addrinfo ) );
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if ( ( n = getaddrinfo( host, serv, &hints, &res ) ) != 0 ){
+        printf("tcp_connect error for %s,%s:%s", host, serv, gai_strerror(n));
+        exit(1);
+    }
+
+    ressave = res;
+    do{
+        sockfd = socket( res->ai_family, res->ai_socktype, res->ai_protocol );
+        if ( sockfd < 0 )
+            continue;
+        if ( connect( sockfd, res->ai_addr, res->ai_addrlen ) == 0 )
+            break;
+        //用于调试
+        cliaddr = ( struct sockaddr_in * )res->ai_addr;
+        close( sockfd );
+    } while ( ( res = res->ai_next ) != NULL );
+
+    if ( res == NULL )
+        printf("tcp_connect error for %s,%s\n", host, serv );
+
+    freeaddrinfo( ressave );
+
+    return ( sockfd );
+}
+#+END_SRC
+
+*** 5.2. 服务端
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#define MAXLINE 1024
+
+int tcp_connect( const char *host, const char *serv );
+
+int main( int argc, char **argv )
+{
+    int     sockfd, n;
+    char    recvline[ MAXLINE + 1 ];
+    socklen_t   len;
+    struct sockaddr_in  cliaddr;
+
+    if ( argc != 3 ){
+        printf("argument should be 3\n");
+        exit(1);
+    }
+    sockfd = tcp_connect( argv[1], argv[2]);
+
+    len = sizeof( cliaddr );
+    getpeername( sockfd, ( struct sockaddr * )&cliaddr, &len );
+    inet_ntop( AF_INET, &cliaddr.sin_addr, recvline, sizeof( recvline ) );
+    printf("connect to %s\n", recvline);
+
+    while ( ( n = read( sockfd, recvline, MAXLINE )) > 0 ){
+        recvline[ n ] = 0;
+        fputs( recvline, stdout );
+    }
+
+    exit( 0 );
+}
+int tcp_connect( const char *host, const char *serv )
+{
+    int     sockfd, n;
+    struct  addrinfo hints, *res, *ressave;
+    struct  sockaddr_in *cliaddr;
+
+    bzero( &hints, sizeof( struct addrinfo ) );
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if ( ( n = getaddrinfo( host, serv, &hints, &res ) ) != 0 ){
+        printf("tcp_connect error for %s,%s:%s", host, serv, gai_strerror(n));
+        exit(1);
+    }
+
+    ressave = res;
+    do{
+        sockfd = socket( res->ai_family, res->ai_socktype, res->ai_protocol );
+        if ( sockfd < 0 )
+            continue;
+        if ( connect( sockfd, res->ai_addr, res->ai_addrlen ) == 0 )
+            break;
+        //用于调试
+        cliaddr = ( struct sockaddr_in * )res->ai_addr;
+        close( sockfd );
+    } while ( ( res = res->ai_next ) != NULL );
+
+    if ( res == NULL )
+        printf("tcp_connect error for %s,%s\n", host, serv );
+
+    freeaddrinfo( ressave );
+
+    return ( sockfd );
+}
+#+END_SRC
+
+** 6. 使用 getaddrinfo 来完成 UDP 时间获取程序
+
+*** 6.1. 客户端
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <netdb.h>
+#include <sys/socket.h>
+
+#define MAXLINE 1024
+
+int udp_client(const char *host, const char *serv, struct sockaddr **saptr, socklen_t *lenp );
+
+int main(int argc, char **argv)
+{
+    int     sockfd, n;
+    char    recvline[ MAXLINE + 1 ];
+    socklen_t   salen;
+    struct  sockaddr *sa;
+
+    if (argc != 3){
+        printf("argument should be 3\n");
+        exit(1);
+    }
+    sockfd = udp_client(argv[1], argv[2], (void **)&sa, &salen);
+
+    sendto(sockfd, "", 1, 0, sa, salen);
+    n = recvfrom(sockfd, recvline, MAXLINE, 0, NULL, NULL);
+    recvline[n] = '\0';
+    fputs(recvline, stdout);
+
+    exit(0);
+}
+int udp_client(const char *host, const char *serv, struct sockaddr **saptr, socklen_t *lenp )
+{
+    int     sockfd, n;
+    struct  addrinfo hints, *res, *ressave;
+
+    bzero(&hints, sizeof(struct addrinfo));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+
+    if ((n = getaddrinfo(host, serv, &hints, &res)) != 0){
+        printf("udp_client error for %s,%s:%s\n", host, serv, gai_strerror(n));
+        exit(1);
+    }
+    ressave = res;
+    do{
+        sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (sockfd >= 0)
+            break;
+    }while ((res = res->ai_next) != NULL);
+
+    if (res == NULL){
+        printf("udp_client error for %s,%s\n", host, serv);
+        exit(1);
+    }
+
+    *saptr = malloc(res->ai_addrlen);
+    memcpy(*saptr, res->ai_addr, res->ai_addrlen);
+    *lenp = res->ai_addrlen;
+
+    freeaddrinfo(ressave);
+
+    return (sockfd);
+}
+#+END_SRC
+
+*** 6.2. 服务端
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <string.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <time.h>
+
+#define MAXLINE 1024
+
+int udp_server(const char *host, const char *serv, socklen_t *addrlenp);
+
+int main(int argc, char **argv)
+{
+	int		sockfd;
+	ssize_t	n;
+	char	buff[MAXLINE];
+	time_t	ticks;
+	socklen_t	len;
+	struct	sockaddr_in	cliaddr;
+
+	sockfd = udp_server( argv[1], argv[2], NULL);
+	for ( ; ; ){
+		len = sizeof(cliaddr);
+		n = recvfrom(sockfd, buff, MAXLINE, 0, (struct sockaddr *)&cliaddr, &len);
+		inet_ntop(AF_INET, &cliaddr.sin_addr, buff, sizeof(buff));
+		printf("datagram from %s\n", buff );
+
+		ticks = time(NULL);
+		snprintf(buff, sizeof(buff), "%.24s\r\n", ctime(&ticks));
+		sendto(sockfd, buff, strlen(buff), 0, (struct sockaddr *)&cliaddr, len);
+	}
+}
+int udp_server(const char *host, const char *serv, socklen_t *addrlenp)
+{
+	int		sockfd, n;
+	struct	addrinfo hints, *res, *ressave;
+
+	bzero(&hints, sizeof(struct addrinfo));
+	hints.ai_flags = AI_PASSIVE;
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_DGRAM;
+
+	if ((n = getaddrinfo(host, serv, &hints, &res)) != 0){
+		printf("udp_server error for %s,%s:%s", host, serv, gai_strerror(n));
+		exit(1);
+	}
+	ressave = res;
+
+	do{
+		sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+		if (sockfd < 0)
+			continue;
+		if (bind(sockfd, res->ai_addr, res->ai_addrlen) == 0)
+			break;
+		close(sockfd);
+	}while ((res = res->ai_next) != NULL);
+
+	if (res == NULL){
+		printf("udp_server error for %s,%s\n", host, serv);
+		exit(1);
+	}
+
+	if (addrlenp)
+		*addrlenp = res->ai_addrlen;
+	freeaddrinfo(ressave);
+
+	return (sockfd);
+}
+#+END_SRC
