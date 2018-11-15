@@ -1,0 +1,385 @@
+* UNP卷1：第十三章（守护进程和inetd超级服务器）
+
+** 1. 概述
+   *守护进程* 是在后台运行且不与任何 *控制终端关联* 的进程。*unix* 系统通常有很多守护进程在后台运行，执行不同的管理任务。
+
+守护进程没有控制终端通常源于它们由 *系统初始化脚本启动* 。然而守护进程也可能从某个终端由用户在 *shell提示符
+下键入命令行* 启动，这样的守护进程必须 *亲自脱离与控制终端的关联* ，从而避免与作业控制，终端会话管理，终端产生
+信号等发生任何 *不期望的交互* ，也可以避免在后台运行的守护进程 *非预期的输出到终端* 。
+
+守护进程有多种启动方法：
+
+1. 在 *系统启动阶段* ，许多守护进程由系统初始化脚本启动。这些脚本通常位于 */etc* 目录或以 */etc/rc* 开头的
+某个目录中，它们的具体位置和内容却是实现相关的。由这些脚本启动的守护进程一开始拥有 *超级用户权限* 。
+
+有若干个网络服务器通常从这些脚本启动： *inetd* 超级服务器， *web* 服务器，邮件服务器（经常是 *sendmail* ）。
+
+2. 许多网络服务器由 *inetd超级服务器启动* 。 *inetd* 自身由上一条中的某个脚本启动。 *inetd* 监听网络请求，
+每当有一个请求到达时，启动相应的 *实际服务器* （ *telnet* 服务器， *FTP* 服务器等）
+
+3. *cron守护进程* 按照规则 *定期执行* 一些程序，而由它启动执行的程序同样作为守护进程运行。 *cron* 自身由
+第一条启动方法中的某个脚本启动
+
+4. *at* 命令用于指定 *将来某个时刻* 的程序执行。这些程序的执行时刻到来时，通常由 *cron* 守护进程启动执行它们，
+因此这些程序同样作为守护进程运行。
+
+5. 守护进程还可以从 *用户终端或在前台或在后台* 启动。这么做往往是 *为了测试* 守护进程或 *重启* 因某种原因而终止了的某个守护进程。
+
+因为守护进程 *没有控制终端* ，所以当有事发生时它们得有输出消息的某种方法可用，而这些消息既可能是普通的 *通告性消息* ，
+也可能是需由系统管理员处理的 *紧急事件消息* 。 *syslog* 函数是输出这些消息的标准方法，它把这些消息发送给 *syslogd* 守护进程。
+
+** 2. syslog、 openlog、和 closelog 函数
+   #+begin_quote
+   遇到类似函数， 参考 APUE
+   #+end_quote
+#+BEGIN_SRC C
+#include <syslog.h>
+void syslog(int priority, const char *message,...);
+void openlog(const char *ident, int options, int facility);
+void closelog(void);
+#+END_SRC
+
+
+*** 2.1. 作为守护进程运行的协议无关时间获取服务器程序
+服务端：
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <syslog.h>
+#include <string.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+extern int errno;
+int daemon_proc;
+
+#define MAXLINE 1024
+#define MAXFD 64
+
+int daemon_init(const char *pname, int facility);
+int tcp_listen(const char *host, const char *serv, socklen_t *addrlenp);
+
+int main(int argc, char **argv)
+{
+    int     listenfd, connfd;
+    socklen_t   len;
+    char    buff[MAXLINE];
+    time_t  ticks;
+    struct  sockaddr_in cliaddr;
+
+    daemon_init(argv[0], 0);
+
+    listenfd = tcp_listen(argv[1], argv[2], NULL);
+
+    for (; ;){
+        len = sizeof(cliaddr);
+        connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &len);
+        inet_ntop(AF_INET, &cliaddr.sin_addr, buff, sizeof(buff));
+        strcat(buff, ".this is a test\n");
+        syslog(LOG_INFO, buff);
+
+        ticks = time(NULL);
+        snprintf(buff, sizeof(buff), "%.24s\r\n", ctime(&ticks));
+        write(connfd, buff, strlen(buff));
+
+        close(connfd);
+    }
+}
+
+int daemon_init(const char *pname, int facility)
+{
+    int     i;
+    pid_t   pid;
+    if ((pid = fork()) < 0)
+        return -1;
+    else if (pid)
+        _exit(0);
+
+    if (setsid() < 0)
+        return -1;
+    signal(SIGHUP, SIG_IGN);
+    if ((pid = fork()) < 0)
+        return -1;
+    else if (pid)
+        _exit(0);
+
+    daemon_proc = 1;
+
+    chdir("/");
+    for (i = 0; i < MAXFD; i++)
+        close(i);
+
+    open("/dev/null", O_RDONLY);
+    open("/dev/null", O_RDWR);
+    open("/dev/null", O_RDWR);
+
+    openlog(pname, LOG_PID, facility);
+    return 0;
+}
+
+int tcp_listen(const char *host, const char *serv, socklen_t *addrlenp)
+{
+    int     listenfd, n;
+    const int on = 1;
+    struct  addrinfo hints, *res, *ressave;
+
+    bzero(&hints, sizeof(struct addrinfo));
+    hints.ai_flags = AI_PASSIVE;
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if ((n = getaddrinfo(host, serv, &hints, &res)) != 0){
+        printf("tcp_listen error for %s,%s:%s\n", host, serv, gai_strerror(n));
+        exit(1);
+    }
+
+    ressave = res;
+
+    do{
+        listenfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (listenfd < 0)
+            continue;
+        setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+        if (bind(listenfd, res->ai_addr, res->ai_addrlen) == 0)
+            break;
+        close(listenfd);
+    } while ((res = res->ai_next) != NULL);
+
+    if (res == NULL)
+        printf("tcp_listen error for %s,%s\n", host, serv);
+
+    listen(listenfd, 5);
+    if (addrlenp)
+        *addrlenp = res->ai_addrlen;
+
+    freeaddrinfo(ressave);
+
+    return listenfd;
+}
+#+END_SRC
+
+客户端：
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <stdlib.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <string.h>
+
+#define MAXLINE 1024
+
+int tcp_connect(const char *host, const char *serv);
+
+int main(int argc, char **argv)
+{
+    int     sockfd, n;
+    char    recvline[MAXLINE + 1];
+    socklen_t   len;
+    struct  sockaddr_in cliaddr;
+
+    if (argc != 3){
+        printf("argument should be 3\n");
+        exit(1);
+    }
+    sockfd = tcp_connect(argv[1], argv[2]);
+
+    len = sizeof(cliaddr);
+    getpeername(sockfd, (struct sockaddr *)&cliaddr, &len);
+    inet_ntop(AF_INET, &cliaddr.sin_addr, recvline, sizeof(recvline));
+    printf("connect to %s\n", recvline);
+
+    while ((n = read(sockfd, recvline, MAXLINE)) > 0){
+        recvline[n] = 0;
+        fputs(recvline, stdout);
+    }
+
+    exit(0);
+}
+
+int tcp_connect(const char *host, const char *serv)
+{
+    int     sockfd, n;
+    struct  addrinfo hints, *res, *ressave;
+    struct  sockaddr_in *cliaddr;
+
+    bzero(&hints, sizeof(struct addrinfo));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if ((n = getaddrinfo(host, serv, &hints, &res)) != 0){
+        printf("tcp_connect error for %s,%s:%s\n", host, serv, gai_strerror(n));
+        exit(1);
+    }
+
+    ressave = res;
+    do{
+        sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (sockfd < 0)
+            continue;
+        if (connect(sockfd, res->ai_addr, res->ai_addrlen) == 0)
+            break;
+
+        cliaddr = (struct sockaddr_in *)res->ai_addr;
+        close(sockfd);
+    } while ((res = res->ai_next) != NULL);
+
+    if (res == NULL)
+        printf("tcp_connect error for %s,%s\n", host, serv);
+
+    freeaddrinfo(ressave);
+
+    return sockfd;
+}
+#+END_SRC
+
+*** 2.2. daemon_init 函数
+1. *fork* 一个子进程
+2. *setid* 创建一个新会话， 当前进程变为新会话的会话头进程以及新进程组的进程组头进程，从而不再有控制终端。
+3. 忽略 *SIGHUP* 信号并再次 *fork*
+
+*SIGHUP* 信号并再次调用 *fork* 。该函数返回时，父进程实际上是上一次调用 *fork* 产生的子进程，它被终止掉，
+留下新的子进程继续运行。再次 *fork* 的目的是确保本守护进程将来即使打开了一个终端设备，也不会自动获得控制终端。
+当没有控制终端的一个会话头进程打开一个终端设备时（该终端不会是当前某个其他会话的控制终端），该终端自动成为这个
+会话头进程的控制终端。然而再次调用 *fork* 之后，我们确保新的子进程不再是一个会话头进程，从而不能自动获得一个
+控制终端。这里必须霍略 *SIGHUP* 信号，因为当会话头进程（即首次 *fork* 产生的子进程）终止时，其会话中的所有
+进程（即再次 *fork* 产生的子进程）都收到 *SIGHUP* 信号。
+
+4. 将 *stdin* ， *stdout* 和 *stderr* 重定向到 */dev/null*
+
+因为之前关闭了所有的描述符，所以要打开这三个基本描述符并且重定向，让 *read* 返回 =0= ， *write* 系统调用丢弃所写的数据
+（书上说如果调用了 *syslog* 函数，则不要调用类似 *printf* 之类的函数，因为会被简单的忽略掉）。因为如果继续
+关闭，则万一有新的进程打开一个描述符，却占用了 =0,1,2= 这三个描述符，则可能导致将错误的数据发送给客户端。
+
+** 3. inetd守护进程
+
+旧的服务器只是等待客户请求的到达，如 *FTP，Telnet，TFTP* 等。这些进程都是在系统自举阶段从 */etc/rc* 文件中启动，
+而且每个进程执行几乎相同的启动任务：创建一个套接字，把本服务器的众所周知端口捆绑到该套接字，等待一个连接或一个数据报，
+然后派生子进程。子进程为客户提供服务，父进程则继续等待下一个客户请求。这个模型存在两个问题：
+
+（1）所有这些守护进程含有几乎相同的启动代码，既表现在创建套接字上，也表现在演变成守护进程上（类似 *daemon_init* 函数）
+
+（2）每个守护进程在进程表中占据一个表项，然而它们大部分时间处于睡眠状态。
+
+而新版本的系统通过提供inetd守护进程（因特网超级服务器）来简化问题：
+
+（1）通过inetd处理普通守护进程的大部分启动细节来简化守护进程的编写。这么一来每个服务器不再有调用 *daemon_init* 函数的必要。
+
+（2）单个进程就能为多个服务等待外来的客户请求，以此取代每个服务一个进程的做法。这么做减少了系统中的进程总数。
+
+*** 3.1. inetd守护进程的工作流程
+[[https://box.kancloud.cn/2016-06-20_57678b3084f7e.jpg]]
+
+**** 3.1.1. 对xinetd.conf文件的说明
+| 字段	                 | 说明                                     |
+| service_name             | 必须在/etc/services文件中定义            |
+| socket_type	          | stream(对于tcp)或dgram(对于udp)          |
+| protocol	             | 必须在/etc/protocols文件中定义：tcp或udp |
+| wait-falg	            | 对于TCP一半为nowait，对于UDP一般为wait   |
+| login-name	           | 来自/etc/passwd的用户名，一般为root      |
+| server-program           | 	 调用exec指定的完整路径名            |
+| server-program-arguments | 	调用exec指定的命令行参数             |
+
+下面是xinetd.conf文件中的若干行：
+| ftp    | stream	     | tcp	 | nowait | 	root	 | /usr/bin/ftpd	 | ftpd -l |
+| telnet | 	stream	 | tcp	 | nowait | 	root	 | /usr/bin/telnetd  | telnetd |
+
+**** 3.1.2. socket()
+在启动阶段，读入 */etc/xinetd.conf* 文件并给该文件中指定的每个服务创建一个适当类型（字节流或数据报）的套接字。
+*inetd* 能够处理的服务器的最大数目取决于 *inetd* 能够创建的描述符的最大数目。新创建的每个套接字都被加入到将由
+某个 *select* 调用使用的一个描述符集中。
+
+**** 3.1.3 bind()
+为每个套接字调用 *bind* ，指定捆绑相应服务器的众所周知端口和通配地址。这个 *TCP* 或 *UDP* 端口号通过调用
+*getservbyname* 获得，作为函数参数的是相应服务器在配置文件中的 *service-name* 字段和 *protocol* 字段。
+
+**** 3.1.4 listen()
+对于每个 *TCP* 套接字，调用 *listen* 以接收外来的连接请求。对于数据报套接字则不执行本步骤
+
+**** 3.1.5 select()等待可读条件
+创建完毕所有套接字之后，调用 *select* 等待其中任何一个套接字变为可读。 *TCP* 监听套接字将在
+有一个新连接准备好可被接受时变为可读， *UDP* 套接字将在有一个数据报到达时变为可读。
+*inetd* 的不部分时间花在阻塞于 *select* 调用内部，等待某个套接字变为可读。
+
+**** 3.1.6. accept()
+当 *select* 返回指出某个套接字已可读之后，如果该套接字是一个 *TCP* 套接字，而且其服务器的 *wait-flag*
+值为 *nowait* ，那就调用 *accept* 接受这个新连接。
+
+**** 3.1.7. fork()
+*inetd* 守护进程调用 *fork* 派生进程，并由子进程处理服务请求。子进程关闭要处理的套接字描述符之外的所有描述符：
+
+对于 *TCP* 服务器来说，这个套接字是由 *accept* 返回的新的已连接套接字，对于 *UDP* 服务器来说，这个套接字是
+父进程最初创建的 *UDP* 套接字。子进程 *dup2* 三次，把这个待处理套接字的描述符复制到描述符0,1和2，然后关闭原
+套接字描述符（由 *accept* 返回的已连接的 *TCP* 套接字）。
+
+子进程然后调用 *exec* 执行由相应的 *server-program* 字段指定的程序来具体处理请求，相应的 *server-program-arguments*
+字段值则作为命令行参数传递给该程序。
+
+如果第五步中的 *select* 返回的是一个字节流套接字，那么父进程必须关闭已连接套接字（就像标准并发服务器那样）。
+父进程再次调用 *select* ，等待下一个变为可读的套接字。（因为 *TCP* 设置的 *nowait* ，意味着 *inetd* 不必
+等待某个子进程终止就可以接收对于该子进程所提供之服务的另一个连接。如果对于某个子进程所提供之服务的另一个连接确实
+在该子进程终止之前到达： *accept* 返回，那么父进程再次调用 *select* ：意味着要关闭已连接的套接字，继续执行步骤4,5,6）
+
+给一个数据报服务指定 *wait* 标志导致父进程执行的步骤发生变化。这个标志要求 *inet* 必须在这个套接字再次称为
+*select* 调用的候选套接字之前等待当前服务该套接字的子进程终止。发生的变化有以下几点：
+
+1. *fork* 返回到父进程时，父进程保存子进程的进程 *ID* 。这么做使得父进程能够通过查看由 *waitpid* 返回的值确定这个子进程的终止时间
+
+2. 父进程通过使用 *FD_CLR* 宏关闭这个套接字在 *select* 所用描述符集中对应的位，达成在将来的 *select* 调用中禁止这个套接字的目的。
+这点意味着子进程将接管该套接字，直到自身终止为止。
+
+3. 当子进程终止时，父进程被通知一个 *SIGCHLD* 信号，而父进程的信号处理函数将取得这个子进程的进程 *ID* 。父进程通过打开相应的套接字在
+*select* 所用描述符集中对应的位，使得该套接字重新成为 *select* 的候选套接字。
+
+*** 3.2. inetd守护进程的服务器程序
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <string.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <time.h>
+#include <netinet/in.h>
+
+#define MAXLINE 1024
+int main(int argc, char **argv)
+{
+	socklen_t		len;
+	struct sockaddr_in cliaddr;
+	char			buff[MAXLINE];
+	time_t			ticks;
+
+	openlog(argv[0], 0);
+
+	len = sizeof(cliaddr);
+	getpeername(0, (struct sockaddr *)&cliaddr, &len);
+	inet_ntop(AF_INET, (struct sockaddr *)&cliaddr.sin_addr, buff, sizeof(buff));
+	printf("connect from %s\n", buff);
+
+	ticks = time(NULL);
+	snprintf(buff, sizeof(buff), "%.24s\r\n", ctime(&ticks));
+	write(0, buff, strlen(buff));
+
+	close(0);
+	exit(0);
+}
+#+END_SRC
+
+在 */etc/service* 中增加：
+#+BEGIN_SRC bash
+mydaytime 9999/tcp
+#+END_SRC
+在 */etc/xinetd.conf* 中增加：
+#+BEGIN_SRC bash
+  mydaytime stream tcp nowait leichaojian /home/leichaojian/newdaytimetcpserv3 newdaytimetcpserv3
+#+END_SRC
+
+转自：https://www.kancloud.cn/digest/unix-fzyz-sb/168131
