@@ -103,6 +103,30 @@ int main( void )
 
 ** 3. getservbyname 和 getservbyport函数
 一个根据给定 *名字* 查找相应服务，一个给定 *端口号和可选协议* 查找相应服务。
+*** 3.1. getservbyname
+#+BEGIN_SRC C
+#include <netdb.h>
+struct servent *getservbyname(const char *sername, const char *protoname);
+// 成功返回非 NULL， 否则返回 NULL
+#+END_SRC
+*servent* 结构体：
+#+BEGIN_SRC C
+struct servent {
+    char *s_name;      /* 服务名 */
+    char *s_aliases;   /* 服务别名 */
+    int s_port,        /* 网络字节序端口号 */
+    char *s_proto;     /* 协议 */
+}
+#+END_SRC
+
+*** 3.2. getservbyport
+#+BEGIN_SRC C
+#include <netdb.h>
+struct servent *getservbyport(int port, const *protoname)
+// 成功返回非 NULL， 否则返回 NULL
+#+END_SRC
+
+*** 3.3. 使用例子
 #+BEGIN_SRC C
 #include <stdio.h>
 #include <netdb.h>
@@ -165,7 +189,6 @@ Cannot access memory at address 0x0
 (gdb) n
 18		return 0;
 #+END_SRC
-
 
 ** 4. getaddrinfo 函数
 此函数可用来代替 *gethostbyname* 和 *gethostbyaddr*
@@ -238,8 +261,29 @@ ai_addrlen:1195661312
 #+END_SRC
 
 ** 5. 使用getaddrinfo来完成TCP时间获取服务器程序
+*** 5.1. 函数原型
+#+BEGIN_SRC C
+#include <netdb.h>
+int getaddrinfo(const char hostname, const char *service,
+               const struct addrinfo *hints, struct addrinfo **result);
+// 成功返回 0， 出错返回非 0
+#+END_SRC
 
-*** 5.1. 客户程序
+*addrinfo* 结构体定义如下：
+#+BEGIN_SRC C
+struct addrinfo {
+int              ai_flags;            /* 标志 */
+int              ai_family;           /* 地址结构族 */
+int              ai_socktype;         /* 如 SOCK_xxx */
+int              ai_protocol;         /* 一般为 0 */
+socklen_t        ai_addrlen;
+char            *ai_canonname;        /* 官方名 */
+struct sockaddr *ai_addr;
+struct addrinfo *ai_next;
+}
+#+END_SRC
+
+*** 5.2. 客户程序
 #+BEGIN_SRC C
 #include <stdio.h>
 #include <stdlib.h>
@@ -312,7 +356,7 @@ int tcp_connect( const char *host, const char *serv )
 }
 #+END_SRC
 
-*** 5.2. 服务端
+*** 5.3. 服务端
 #+BEGIN_SRC C
 #include <stdio.h>
 #include <stdlib.h>
@@ -525,3 +569,14 @@ int udp_server(const char *host, const char *serv, socklen_t *addrlenp)
 	return (sockfd);
 }
 #+END_SRC
+
+** 7. 小结
+   应用程序把主机名转换为 *IP* 或相反转换的一组函数称为解析器。
+| 信息 | 数据文件       | 结构     | 键值查找函数                     |
+|------+----------------+----------+----------------------------------|
+| 主机 | /etc/hosts     | hostent  | gethostbyaddr, gethostbyname     |
+| 网络 | /etc/networks  | netent   | getnetbyaddr, getnetbyname       |
+| 协议 | /etc/protocols | protoent | getprotobyname, getprotobynumber |
+| 服务 | /etc/services  | servent  | getservbyname, getservbyport     |
+
+转自：https://www.kancloud.cn/digest/unix-fzyz-sb/168130
