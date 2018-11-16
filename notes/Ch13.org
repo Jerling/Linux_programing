@@ -41,6 +41,7 @@ void closelog(void);
 
 *** 2.1. syslog
     守护进程没有控制终端，所以没法将消息 *fprintf* 到 *stderr* 上，所以需要将消息登记到 *syslog* 中。
+
 参数：
 - priority: 级别(level) 和 设施(facility) 的组合--目的在于允许在 */etc/syslog.conf* 文件中统一配置来自同一给定设施的所有
 消息.或者统一统一配置具有相同级别的所有消息
@@ -52,6 +53,7 @@ syslog(LOG_INFO|LOG_LOCAL2, "rename(%s, %s): %m", file1, file2);
 
 *** 2.2. openlog 和closlog
     *openlog* 可以在 *syslog* 前调用， *closelog* 可以在不用发消息时调用
+
 参数：
 - ident: 由 *syslog* 冠于每个日志消息之前的字符串，通常是程序名
 - options：选项. *openlog* 调用时并不立即创建 *Unix* 域套接字，直到首次调用 *syslog* 时才打开。可以设置 *LOG_NDELAY* 迫使立即创建。
@@ -98,7 +100,7 @@ int main(int argc, char **argv)
         connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &len);
         inet_ntop(AF_INET, &cliaddr.sin_addr, buff, sizeof(buff));
         strcat(buff, ".this is a test\n");
-        syslog(LOG_INFO, buff);
+        syslog(LOG_INFO, "%s", buff);
 
         ticks = time(NULL);
         snprintf(buff, sizeof(buff), "%.24s\r\n", ctime(&ticks));
@@ -256,6 +258,21 @@ int tcp_connect(const char *host, const char *serv)
 }
 #+END_SRC
 
+程序运行：
+#+BEGIN_SRC bash
+$ /tmp/ser Master 9878
+$ ps aux | grep /tmp/ser
+│hadoop   13009 43.5  0.0   6472  1412 ?        S    11:13   0:22 /tmp/ser Master 9878
+
+$ /tmp/cli Master 9878
+│connect to 192.168.1.24
+│Fri Nov 16 11:16:28 2018
+
+$ sudo tail -n 1 /var/log/syslog
+Nov 16 11:18:53 Master /tmp/ser[13009]: 0.0.0.0.this is a test
+#+END_SRC
+
+
 *** 2.4. daemon_init 函数
 1. *fork* 一个子进程
 2. *setid* 创建一个新会话， 当前进程变为新会话的会话头进程以及新进程组的进程组头进程，从而不再有控制终端。
@@ -263,9 +280,9 @@ int tcp_connect(const char *host, const char *serv)
 
 *SIGHUP* 信号并再次调用 *fork* 。该函数返回时，父进程实际上是上一次调用 *fork* 产生的子进程，它被终止掉，
 留下新的子进程继续运行。再次 *fork* 的目的是确保本守护进程将来即使打开了一个终端设备，也不会自动获得控制终端。
-当没有控制终端的一个会话头进程打开一个终端设备时（该终端不会是当前某个其他会话的控制终端），该终端自动成为这个
+当没有控制终端的一个会话进程打开一个终端设备时（该终端不会是当前某个其他会话的控制终端），该终端自动成为这个
 会话头进程的控制终端。然而再次调用 *fork* 之后，我们确保新的子进程不再是一个会话头进程，从而不能自动获得一个
-控制终端。这里必须霍略 *SIGHUP* 信号，因为当会话头进程（即首次 *fork* 产生的子进程）终止时，其会话中的所有
+控制终端。这里必须忽略 *SIGHUP* 信号，因为当会话进程（即首次 *fork* 产生的子进程）终止时，其会话中的所有
 进程（即再次 *fork* 产生的子进程）都收到 *SIGHUP* 信号。
 
 4. 将 *stdin* ， *stdout* 和 *stderr* 重定向到 */dev/null*
@@ -322,7 +339,7 @@ int tcp_connect(const char *host, const char *serv)
 **** 3.1.5 select()等待可读条件
 创建完毕所有套接字之后，调用 *select* 等待其中任何一个套接字变为可读。 *TCP* 监听套接字将在
 有一个新连接准备好可被接受时变为可读， *UDP* 套接字将在有一个数据报到达时变为可读。
-*inetd* 的不部分时间花在阻塞于 *select* 调用内部，等待某个套接字变为可读。
+*inetd* 的大部分时间花在阻塞于 *select* 调用内部，等待某个套接字变为可读。
 
 **** 3.1.6. accept()
 当 *select* 返回指出某个套接字已可读之后，如果该套接字是一个 *TCP* 套接字，而且其服务器的 *wait-flag*

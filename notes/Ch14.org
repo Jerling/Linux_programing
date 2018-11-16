@@ -1,0 +1,77 @@
+* UNP卷1：第十四章（高级I/O函数
+** 1. 概述
+讨论各个函数和技术：
+1. 设置超时(三种方法)
+2. *read* 和 *write* 的变体：
+   1. *recv* 和*send*、
+   2. *readv* 和 *writev*
+   3. *recvmsg* 和 *sendmsg*
+** 2. 套接字超时
+1. *alarm* : 产生 *SIGALRM*
+2. *select*: 代替在 *read* 和 *write* 中的阻塞
+3. 使用 *SO_RCVTIMEO* 和 *SO_SNDTIMEO*
+** 3. recv 和send 函数
+需要额外的参数
+#+BEGIN_SRC C
+#include <sys/socket.h>
+ssize_t recv(int sockfd, void *buff, size_t nbytes, int flags);
+ssize_t send(int sockfd, void *buff, size_t nbytes, int flags);
+// 成功返回读入或写出的字节数，出错返回 -1
+#+END_SRC
+
+| flags         | recv | 说明               | send |
+| MSG_DONTROUTE |      | 绕过路由表查找     | *    |
+| MSG_DONTWAIT  | *    | 仅本操作阻塞       | *    |
+| MSG_OOB       | *    | 发送或接受带外数据 | *    |
+| MSG_WAITALL   | *    | 等待所有数据       |      |
+| MSG_PEEK      | *    | 窥看外来消息       |      |
+** 4. readv 和 writev 函数
+允许读入或写出可以来自一个或多个缓冲区，称为 *分散读* 和 *集中写* .
+#+BEGIN_SRC C
+#include <sys/uio.h>
+ssize_t readv(int fileds, const struct iovec *iov, int iovcnt);
+ssize_t writev(int fileds, const struct iovec *iov, int iovcnt);
+// 成功返回读入或写出的字节数，出错返回 -1
+
+// iovec 结构体
+struct iovec {
+  void *iov_base;  /* buffer起始地址 */
+  size_t iov_len;  /* buffer大小 存在限制，具体取决于实现, POSIX 要求至少 16 */
+}
+#+END_SRC
+
+可用于任何描述符，不限于套接字。其中 *writev* 是原子操作
+** 5. recvmsg 和 recvmsg 函数
+最通用的，其他 I/O 函数都可以它们替换
+#+BEGIN_SRC C
+#include <sys/socket.h>
+ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
+ssize_t sendmsg(int sockfd, struct msghdr *msg, int flags);
+// 成功返回读入或写出的字节数，出错返回 -1
+
+// msghdr 结构体
+struct msghdr {
+void         *msg_name;         /* 协议地址 */
+socklen_t     msg_namelen;
+struct iovec *msg_iov;          /* 分散读集中写数组 */
+int           msg_iovlen;
+void         *msg_control;      /* 辅助数据 */
+socklen_t     msg_controllen;
+int           msg_flags;
+}
+#+END_SRC
+
+    *msg_name*  和 *msg_namelen* 这两个成员用于套接字未连接的场合(譬如未连接的UDP套接字)。
+它们类似 *recvform和sendto* 的第五个和第六个参数: *msg_name* 指向一个套接字地址结构，调
+用者在其中存放接收者(对于:endmsg调用)或发送者(对于resvmsg调用)的协议地址。如果
+无需指明协议地址(例如对于TCP套接字或已连接UDP套接字)， *msg_name* 应置为空指针。
+*msg_name* 对 *sendmsg* 是一个值参数，对于 *recvmsg* 却是一个值一结果参数口
+    *msg_iov* 和 *mag_iovlen* 这两个成员指定输入或输出缓冲区数组(即iovec结构数组)，类似
+*readv* 或 *writev* 的第二个和第三个参数。*msg_control* 和 *msg_contrcllen* 这两个成员指定可选
+的辅助数据的位置和大小。 *msg_control* 对于 *recvmsg* 是一个值一结果参数。
+
+注意区分两个标志变量
+- 传递值的 flags 参数
+- 传递 msghdr 结构的 msg_flags成员，传递的是引用
+- recvmsg 使用 msg_flags。调用时,flags 参数被复制到 msg_flags，由内核使用其值驱动接受处理的过程并根据 recvmsg 的结果更新msg_flags的值。
+- sendmsg 忽略 msg_flags。直接使用 flags 驱动发送处理过程

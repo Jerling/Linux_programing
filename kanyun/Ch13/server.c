@@ -36,7 +36,7 @@ int main(int argc, char **argv)
         connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &len);
         inet_ntop(AF_INET, &cliaddr.sin_addr, buff, sizeof(buff));
         strcat(buff, ".this is a test\n");
-        syslog(LOG_INFO, buff);
+        syslog(LOG_INFO, "%s", buff);
 
         ticks = time(NULL);
         snprintf(buff, sizeof(buff), "%.24s\r\n", ctime(&ticks));
