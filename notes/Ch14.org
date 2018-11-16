@@ -3,7 +3,7 @@
 讨论各个函数和技术：
 1. 设置超时(三种方法)
 2. *read* 和 *write* 的变体：
-   1. *recv* 和*send*、
+   1. *recv* 和 *send*
    2. *readv* 和 *writev*
    3. *recvmsg* 和 *sendmsg*
 ** 2. 套接字超时
@@ -19,12 +19,12 @@ ssize_t send(int sockfd, void *buff, size_t nbytes, int flags);
 // 成功返回读入或写出的字节数，出错返回 -1
 #+END_SRC
 
-| flags         | recv | 说明               | send |
-| MSG_DONTROUTE |      | 绕过路由表查找     | *    |
-| MSG_DONTWAIT  | *    | 仅本操作阻塞       | *    |
-| MSG_OOB       | *    | 发送或接受带外数据 | *    |
-| MSG_WAITALL   | *    | 等待所有数据       |      |
-| MSG_PEEK      | *    | 窥看外来消息       |      |
+| flags         | 说明              | recv  | send |
+| MSG_DONTROUTE | 绕过路由表查找    |       | *    |
+| MSG_DONTWAIT  | 仅本操作阻塞      | *     | *    |
+| MSG_OOB       | 发送或接受带外数据| *     | *    |
+| MSG_WAITALL   | 等待所有数据      | *     |      |
+| MSG_PEEK      | 窥看外来消息      | *     |      |
 ** 4. readv 和 writev 函数
 允许读入或写出可以来自一个或多个缓冲区，称为 *分散读* 和 *集中写* .
 #+BEGIN_SRC C
