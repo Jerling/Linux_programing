@@ -30,7 +30,7 @@
 
 ** 2. syslog、 openlog、和 closelog 函数
    #+begin_quote
-   遇到类似函数， 参考 APUE
+   遇到类似函数， 详细参考 APUE
    #+end_quote
 #+BEGIN_SRC C
 #include <syslog.h>
@@ -39,8 +39,25 @@ void openlog(const char *ident, int options, int facility);
 void closelog(void);
 #+END_SRC
 
+*** 2.1. syslog
+    守护进程没有控制终端，所以没法将消息 *fprintf* 到 *stderr* 上，所以需要将消息登记到 *syslog* 中。
+参数：
+- priority: 级别(level) 和 设施(facility) 的组合--目的在于允许在 */etc/syslog.conf* 文件中统一配置来自同一给定设施的所有
+消息.或者统一统一配置具有相同级别的所有消息
+- message: 类似printf的格式串，但增设了 %m 规范，它将被替换成与当前errno值对应的出错消息
+- 实例: *rename* 函数调用失败时
+#+BEGIN_SRC C
+syslog(LOG_INFO|LOG_LOCAL2, "rename(%s, %s): %m", file1, file2);
+#+END_SRC
 
-*** 2.1. 作为守护进程运行的协议无关时间获取服务器程序
+*** 2.2. openlog 和closlog
+    *openlog* 可以在 *syslog* 前调用， *closelog* 可以在不用发消息时调用
+参数：
+- ident: 由 *syslog* 冠于每个日志消息之前的字符串，通常是程序名
+- options：选项. *openlog* 调用时并不立即创建 *Unix* 域套接字，直到首次调用 *syslog* 时才打开。可以设置 *LOG_NDELAY* 迫使立即创建。
+- facility: 设施
+
+*** 2.3. 作为守护进程运行的协议无关时间获取服务器程序
 服务端：
 #+BEGIN_SRC C
 #include <stdio.h>
@@ -239,7 +256,7 @@ int tcp_connect(const char *host, const char *serv)
 }
 #+END_SRC
 
-*** 2.2. daemon_init 函数
+*** 2.4. daemon_init 函数
 1. *fork* 一个子进程
 2. *setid* 创建一个新会话， 当前进程变为新会话的会话头进程以及新进程组的进程组头进程，从而不再有控制终端。
 3. 忽略 *SIGHUP* 信号并再次 *fork*
