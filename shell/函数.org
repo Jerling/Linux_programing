@@ -1,0 +1,56 @@
+* 使用函数
+** 1. 数组
+- 定义数组: =A=(0 1 2)=
+- 引用元素： ${A[i]}
+
+实例：
+#+BEGIN_SRC bash
+#!/bin/bash
+#array test
+#by author Jerling <2018-11-17 六>
+
+arr=(
+item1
+item2
+item3
+)
+echo ${arr[0]}
+echo "arr: ${arr[*]}"
+echo "arr size: ${#arr[*]}"
+echo "arr: ${arr[@]}"
+echo "arr size: ${#arr[@]}"
+#+END_SRC
+
+#+RESULTS:
+| item1 |       |       |       |
+| arr:  | item1 | item2 | item3 |
+| arr   | size: |     3 |       |
+| arr:  | item1 | item2 | item3 |
+| arr   | size: |     3 |       |
+** 2. 函数
+- 格式
+#+BEGIN_SRC bash
+function command()
+{
+函数体
+}
+# 调用
+command
+#+END_SRC
+
+实例：
+#+BEGIN_SRC bash
+#!/bin/bash
+#function
+#by author Jerling <2018-11-17 六>
+
+function command()
+{
+    echo "This is a function test"
+}
+
+command
+#+END_SRC
+
+#+RESULTS:
+: This is a function test

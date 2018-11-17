@@ -1,0 +1,87 @@
+* for循环语句
+#+BEGIN_SRC bash
+for var in chars
+do
+语句1
+done
+#+END_SRC
+
+实例1：
+#+BEGIN_SRC bash
+#!/bin/bash
+#seq test
+#by Jerling <2018-11-17 六>
+
+for i in `seq 1 5`
+do
+    echo $i
+done
+#+END_SRC
+
+#+RESULTS:
+| 1 |
+| 2 |
+| 3 |
+| 4 |
+| 5 |
+
+实例2 -- 求和
+#+BEGIN_SRC bash
+#!/bin/bash
+#auto for sum
+#by Jerling <2018-11-17 六>
+
+sum=0
+for ((i=1; i<=100; i++))
+do
+    sum=`expr $i + $sum`
+done
+
+echo $sum
+#+END_SRC
+
+#+RESULTS:
+: 5050
+#+begin_quote
+sh sum.sh -x | more 可以查看运行细节
+#+end_quote
+
+实例3 -- 打包日志文件
+#+BEGIN_SRC bash
+#!/bin/bash
+#auto tar log for each file
+#by Jerling <2018-11-17 六>
+
+#tar
+for i in `find /var/log -name "*.log"`
+do
+    tar -czvf test_$i.tgz $i
+done
+
+#extract
+for i in `find /var/log -name "*.tgz"`
+do
+    tar -xzvf $i
+done
+
+#+END_SRC
+
+实例4 -- 批量上传到服务器
+#+BEGIN_SRC bash
+#!/bin/bash
+#auto scp files for client
+#by Jerling <2018-11-17 六>
+
+FILES=$*
+
+if [ -z $* ]; then
+    echo 'Usage: {$0 files|dirs}'
+    exit
+fi
+
+#upload
+for i in `echo 127.0.0.1`
+do
+    scp -r $FILES root@$i:/root/
+done
+#+END_SRC

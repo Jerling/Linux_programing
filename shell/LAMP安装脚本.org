@@ -1,0 +1,71 @@
+* LAMP一键安装脚本
+#+BEGIN_SRC bash
+#!/bin/bash
+#auto make install LAMP
+#by Jerling <2018-11-17 六>
+
+#Httpd define path variable
+H_FILES=
+H_FILES_DIR=
+H_URL=
+H_PREFIX=
+
+#MySQL define path variable
+M_FILES=
+M_FILES_DIR=
+M_URL=
+M_PREFIX=
+
+
+#MySQL define path variable
+P_FILES=
+P_FILES_DIR=
+P_URL=
+P_PREFIX=
+
+if [ -z "$1" ]; then  #没有参数
+    echo "1) 安装 apache 服务器。"
+    echo "2) 安装 MySQL 服务器。"
+    echo "3) 安装 PHP 服务器。"
+    echo "4) 配置 LAMP_WEB 架构。"
+    echo "Usage: {sh $0 1|2|3|4|help}"
+    exit
+fi
+
+#auto install apache
+if [[ "$1" -eq "1" ]]; then
+    wget -C $H_URL/$H_FILES && tar jxvf $H_FILES && cd $H_FILES_DIR
+    ./configure --prefix=$H_PREFIX
+    if [ $? -eq 0 ]; then
+        make && make install
+        echo '$H_FILES_DIR Server Install Successfully!'
+    else
+        echo '$H_FILES_DIR Server Install Fialed, Please check...'
+    fi
+fi
+
+#auto install mysql
+if [[ "$1" -eq "2" ]]; then
+    wget -C $M_URL/$M_FILES && tar xzvf $M_FILES && cd $M_FILES_DIR
+    cmake . && make && make install
+    if [ $? -eq 0 ]; then
+        make && make install
+        echo '$M_FILES_DIR Server Install Successfully!'
+    else
+        echo '$M_FILES_DIR Server Install Fialed, Please check...'
+    fi
+fi
+
+
+#auto install php
+if [[ "$1" -eq "3" ]]; then
+    wget -C $P_URL/$P_FILES && tar jxvf $P_FILES && cd $P_FILES_DIR
+    ./configure --prefix=$P_PREFIX
+    if [ $? -eq 0 ]; then
+        make && make install
+        echo '$P_FILES_DIR Server Install Successfully!'
+    else
+        echo '$P_FILES_DIR Server Install Fialed, Please check...'
+    fi
+fi
+#+END_SRC

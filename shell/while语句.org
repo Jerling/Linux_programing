@@ -1,0 +1,50 @@
+* while循环语句
+#+BEGIN_SRC bash
+while 条件语句
+do
+执行语句
+done
+#+END_SRC
+
+实例1
+#+BEGIN_SRC bash
+#!/bin/bash
+#判断数字
+#by Jerling <2018-11-17 六>
+
+i=0
+while [[ $i -lt 5 ]]  # 不要忘记 lt 前面的 -
+do
+    echo $i
+    ((i++))           # 计算用 (()) 判断用 [[]]
+done
+#+END_SRC
+
+#+RESULTS:
+| 0 |
+| 1 |
+| 2 |
+| 3 |
+| 4 |
+
+实例2
+#+BEGIN_SRC bash
+#!/bin/bash
+#read test
+#by Jerling <2018-11-17 六>
+
+# read -p printInfo input
+# -p 可以打印提示信息, input为赋值变量
+
+while read line
+do
+    echo $line
+done < /etc/hosts
+#+END_SRC
+
+#+RESULTS:
+| 127.0.0.1 | localhost      |               |              |
+| 127.0.1.1 | VM             |               |              |
+| ::1       | localhost      | ip6-localhost | ip6-loopback |
+| ff02::1   | ip6-allnodes   |               |              |
+| ff02::2   | ip6-allrouters |               |              |

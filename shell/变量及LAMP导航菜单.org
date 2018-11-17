@@ -1,0 +1,57 @@
+* 变量及LAMP导航菜单
+
+** 1. 变量
+- Shell 是解释性语言，不需要声明变量，赋值时定义
+- 分两类： 局部变量 和 环境变量
+- 定义： A=123 注意 = 不能前后不能有空格，否则解析成命令
+- 引用： $A
+
+例子：
+#+BEGIN_SRC bash
+#!/bin/bash
+#define path variables
+#by authors Jerling <2018-11-17 六>
+
+var=123  # 注意 = 前后不能有空格，否则解析成命令
+echo "This is shell var $var"
+#+END_SRC
+
+#+RESULTS:
+: This is shell var 123
+
+*** 1.1 常见系统变量
+| $变量 | 解析                       |
+|-------+----------------------------|
+| 0     | 脚本名称                   |
+| 1-9   | 参数                       |
+| ?     | 判断前一个命令是否正确执行 |
+| *     | 全部参数                   |
+| #     | 参数个数                   |
+| UID   | 当前用户 ID                |
+| PWD   | 当前所在目录               |
+
+
+** 2. LAMP导航菜单
+例子：
+#+BEGIN_SRC bash
+#!/bin/bash
+#by authors Jerling <2018-11-17 六>
+
+echo -e "\033[32mPlease select Menu follow:\033]1m"
+# 变色
+
+echo "1) 安装 apache 服务器。"
+echo "2) 安装 MySQL 服务器。"
+echo "3) 安装 PHP 服务器。"
+echo "4) 配置 LAMP_WEB 架构。"
+
+echo "------- --------- ------------ ----------------"
+#+END_SRC
+
+#+RESULTS:
+| [32mPlease | select    | Menu         | follow:]1m     |
+|           1) | 安装      | apache       | 服务器。         |
+|           2) | 安装      | MySQL        | 服务器。         |
+|           3) | 安装      | PHP          | 服务器。         |
+|           4) | 配置      | LAMP_WEB     | 架构。           |
+|      ------- | --------- | ------------ | ---------------- |

@@ -1,0 +1,108 @@
+* if条件语句
+
+** 1. if条件判断语句
+#+BEGIN_SRC bash
+if (expr) # if (var in array)
+# 语句1
+else
+# 语句2
+fi
+#+END_SRC
+
+实例1 -- 比较大小：
+#+BEGIN_SRC bash
+#!/bin/bash
+#auto if test
+#by Jerling <2018-11-17 六>
+
+var1=100
+var2=200
+if (($var > $var2));
+then
+    echo "$var1 大于 $var2"
+else
+    echo "$var1 不大于 $var2"
+fi
+#+END_SRC
+
+#+RESULTS:
+: 100 不大于 200
+
+** 2. 逻辑运算符解析
+| 逻辑运算符 | 解析         | 备注                   |
+|------------+--------------+------------------------|
+| -f         | 文件是否存在 | eg: if [ -f filaname ] |
+| -d         | 目录是否存在 | eg: if [ -d dir ]      |
+| -eq        | 等于         | 整型                   |
+| -ne        | 不等于       | 整型                   |
+| -lt        | 小于         | 整型                   |
+| -gt        | 大于         | 整型                   |
+| -ge        | 大于等于     | 整型                   |
+| -le        | 小于等于     | 整型                   |
+| -a         | and          | 逻辑与                 |
+| -o         | or           | 逻辑或                 |
+| -z         | 空字符串     |                        |
+
+实例2 -- 测试目录
+#+BEGIN_SRC bash
+#!/bin/bash
+#auto test dir
+#by Jerling <2018-11-17 六>
+
+dir=~/test
+if [ ! -d $dir ];
+then
+    mkdir -p $dir
+    echo "$dir 创建成功"
+else
+    echo "$dir 已经存在"
+fi
+rm -rf $dir
+echo "删除 $dir"
+#+END_SRC
+
+#+RESULTS:
+| /home/jer/test | 创建成功       |
+| 删除           | /home/jer/test |
+
+
+实例3 -- 测试文件
+#+BEGIN_SRC bash
+#!/bin/bash
+#auto test file
+#by Jerling <2018-11-17 六>
+
+file=~/test.sh
+if [ ! -f $file ];
+then
+    echo "test" > $file
+else
+    echo "$file 存在"
+fi
+#+END_SRC
+
+#+RESULTS:
+: /home/jer/test.sh 存在
+
+实例4 -- 多条件测试
+#+BEGIN_SRC bash
+#!/bin/bash
+#by Jerling <2018-11-17 六>
+
+scores=85
+
+if [[ $scores -gt 90 ]]; then
+    echo 'best'
+elif [[ $scores -gt 80 ]]; then
+    echo 'good'
+elif [[ $scores -gt 70 ]]; then
+    echo 'not bad'
+elif [[ $scores -gt 60 ]]; then
+    echo 'pass'
+else
+    echo 'no pass'
+fi
+#+END_SRC
+
+#+RESULTS:
+: good

@@ -1,6 +1,30 @@
 * Linux_programing
 学习笔记：
+** 系统编程
 
+** shell 编程
+[[file:shell/1.linux下编程基础入门.org][1.linux下编程基础入门]]
+
+[[file:shell/变量及LAMP导航菜单.org][2.变量及LAMP导航菜单]]
+
+[[file:shell/if条件语句.org][3.if条件语句]]
+
+[[file:shell/编写MySQL备份脚本.org][4.MySQL备份脚本]]
+
+[[file:shell/LAMP安装脚本.org][5.LAMP安装脚本]]
+
+[[file:shell/for语句.org][6.for语句]]
+
+[[file:shell/while语句.org][7.while语句]]
+
+[[file:shell/until语句.org][8.until语句]]
+
+[[file:shell/函数.org][9.函数使用]]
+
+[[file:shell/awk_sed_命令.org][10.awk_sed_命令]]
+
+
+** 网络编程
 [[file:notes/Ch01.org][UNP卷1：第一章（简介）]]
 
 [[file:notes/Ch03.org][UNP卷1：第三章（套接字编程简介)]]

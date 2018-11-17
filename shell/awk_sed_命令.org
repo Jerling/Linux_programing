@@ -1,0 +1,38 @@
+* awk 、sed命令
+
+** sed命令
+- 用途： 在shell中修改文件, 和vim 的命令模式一样
+- 格式： sed 's/old/new/g' file.txt
+- 默认是预修改，要实际修改文件内容加上参数 -i
+
+例子
+#+BEGIN_SRC bash
+sed 's/old/new/g' file.txt    # new替换old
+sed 's/^/&add/g' file.txt     # 在行首添加add
+sed 's/$/&add/g'  file.txt    # 在行尾添加add
+sed '/string/a add' file.txt  # 在string的后一行加入add
+sed '/string/i add' file.txt  # 在string的前一行加入add
+sed -n '/string/p' file.txt   # 打印匹配string的一行
+sed -n '1[,n]p' file.txt      # 打印多行
+
+# 求一系列数字的文本的最值
+cat number.txt | sed 's/ /\n/g' | grep -v "^$" | sort -nr | sed -n '1p;$p'
+# sed 将空格替换为回车， grep -v 过滤空行，sort -nr 从大到小排序 ， sed 打印第一个和最后一个
+#+END_SRC
+
+** awk命令
+例子1
+#+BEGIN_SRC bash
+head -n 1 /etc/hosts
+head -n 1 /etc/hosts | awk '{print "不拆解 " $1}'      # 打印第1列  这里不能用双引号
+head -n 1 /etc/hosts | awk -F\. '{print "拆解 " $NF}'   # 一.分割打印最后一列
+
+# 打印 ip 地址
+ip addr | grep "inet" | sed -n "3p" | awk '{print $2}' | awk -F\/ '{print $1}'
+#+END_SRC
+
+#+RESULTS:
+|      127.0.0.1 | localhost |           |
+|         不拆解 | 127.0.0.1 |           |
+|           拆解 |         1 | localhost |
+| 192.168.85.134 |           |           |

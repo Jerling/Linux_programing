@@ -1,0 +1,22 @@
+* linux 下编程基础
+
+** 1. 注解
+例子：
+#+BEGIN_SRC bash
+#!/bin/bash
+#Filename: hello.sh
+#by authors Jerling
+
+echo 'hello world'
+mkdir ~/test
+echo 'Done!'
+#+END_SRC
+
+#+RESULTS:
+| hello | world |
+| Done! |       |
+
+运行：
+- sh hello.sh
+- /bin/bash hello.sh
+- chmod +x hello.sh && ./hello.sh

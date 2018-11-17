@@ -1,0 +1,84 @@
+* until循环语句
+#+BEGIN_SRC bash
+until 条件语句
+do
+执行语句
+done
+#+END_SRC
+
+实例1
+#+BEGIN_SRC bash
+#!/bin/bash
+#by Jerling <2018-11-17 六>
+
+i=0
+until [[ "$i" -gt 5 ]]    #大于5
+do
+    let "square=i*i"
+    echo "$i * $i = $square"
+    let "i++"
+done
+#+END_SRC
+
+#+RESULTS:
+| 0 | * | 0 | = |  0 |
+| 1 | * | 1 | = |  1 |
+| 2 | * | 2 | = |  4 |
+| 3 | * | 3 | = |  9 |
+| 4 | * | 4 | = | 16 |
+| 5 | * | 5 | = | 25 |
+* Case选择语句
+#+BEGIN_SRC bash
+case $arg in
+partten1)
+语句1
+;;  # 结束一个 case
+partten2)
+语句2
+;;
+*)
+默认语句
+;;
+esac
+#+END_SRC
+
+实例1
+#+BEGIN_SRC bash
+#!/bin/bash
+#auto install LAMP
+#by authors Jerling <2018-11-17 六>
+
+arg=PHP
+case $arg in
+    Apache)
+    echo 'wait install http server...'
+    ;;
+    Mysql)
+    echo 'wait install MySql server'
+    ;;
+    PHP)
+    echo 'wait install PHP server'
+    ;;
+    *)
+    echo 'Usage: {$0: Apache|Mysql|PHP|help}'
+    ;;
+esac
+#+END_SRC
+
+#+RESULTS:
+: wait install PHP server
+* select语句
+一般用于菜单的创建
+
+实例1
+#+BEGIN_SRC bash
+#!/bin/bash
+#select test
+#by author Jerling <2018-11-17 六>
+
+PS3="Please Select Your System in Menu:"
+select i in "Centos" "Ubuntu" "Manjaro"
+do
+    echo 'selected $i'
+done
+#+END_SRC
