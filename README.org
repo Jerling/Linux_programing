@@ -23,6 +23,11 @@
 
 [[file:shell/awk_sed_命令.org][10.awk_sed_命令]]
 
+[[file:shell/linux增量备份.org][11.linux增量备份]]
+
+[[file:shell/linux自动化.org][12.Linux自动化]]
+
+视频地址：https://www.bilibili.com/video/av8104450/?p=1
 
 ** 网络编程
 [[file:notes/Ch01.org][UNP卷1：第一章（简介）]]

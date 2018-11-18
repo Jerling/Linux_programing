@@ -1,0 +1,62 @@
+* Linux 增量备份脚本
+  在 linux 系统中需要经常备份重要文件，如 /etc、/boot分区、重要网络数据等，
+
+- 备份策略：一周完整备份一次，其余每日增量备份
+- tar命令
+  - 全备份：  =tar -g /tmp/snapshot -czvf /tmp/test_full_bak.tar.gz /data/data=
+    全备份并且创建一个快照，便于之后增量备份
+  - 增量备份： =tar -g /tmp/snapshot -czvf /tmp/test_add_bak.tar.gz /data/data=
+    在已存在的快照上继续增量备份
+
+** 实例
+#+BEGIN_SRC bash
+#!/bin/bash
+#auto backup
+#by author Jerling <2018-11-18 日>
+
+source_dir=(
+    $*
+)
+
+target_dir=/data/backup/
+year=`date +%Y`
+month=`date +%m`
+day=`date +%d`
+week=`date +%u`
+name=`date +%H%M`
+files=${name}_system_backup.tgz
+code=$?
+
+if [ -z "$*" ]
+then
+    echo "Usage: $0 /boot /etc"
+fi
+
+if [ ! -d $target_dir/$year/$month/$day ]
+then
+    mkdir -p $target_dir/$year/$month/$day
+    echo "$target_dir Created Successfully"
+fi
+
+function Backup()
+{
+    cd $target_dir/$year/$month/$day
+    tar -g $target_dir/snapshot -czvf $files ${source_dir[*]}
+}
+
+
+sleep 3   # 等待3s
+
+if [ "$week" -eq "7" ]
+then
+    rm -rf $target_dir/snapshot
+    way=Full_backup
+else
+    way=Add_backup
+Backup
+if [ "$code" -eq "0" ]
+then
+    echo "$way Successfully on `date`"
+else
+    echo "$way Full_backup on `date`"
+#+END_SRC

@@ -1,0 +1,23 @@
+* Linux自动化
+  为批量或单个检查系统服务是否启动，如果没有，则发邮件通知
+** 1. 脚本分解
+1. for 循环，或者参数输入
+2. 系统的服务、状态
+3. 没有启动的状态是什么
+4. 如何发送邮件，邮件的格式
+#+BEGIN_SRC bash
+#!/bin/bash
+#auto monitor server
+#by author Jerling <2018-11-18 日>
+
+email=email.txt
+server=httpd
+count=`ps -ef|grep $server|grep -v grep|wc -l`
+
+if [ $count -eq 0 ]
+then
+    echo "The $server Server Connection Refused."
+    mail -s "$server warning" example@gmail.com < $email
+else
+    echo "The $server Server Ok"
+#+END_SRC
