@@ -1,0 +1,391 @@
+* UNP卷1：第十五章（unix域协议）
+
+** 1. 概述
+*unix* 域协议并不是一个实际的协议族，而是在单个主机上执行客户/服务器通信的一种方法。unix域提供两类套接字：字节流套接字（类似TCP）
+和数据报套接字（类似UDP）。使用 *unix* 域协议有如下的优势：
+1. *unix* 域套接字往往比通信两端位于 *同一个主机* 的TCP套接字 *快出一倍* 。
+2. *unix* 域套接字可用于在同一个主机上的 *不同进程* 之间 *传递描述符* 。
+3. *unix* 域套接字较新的实现把客户的凭证（用户ID和组ID）提供给服务器，从而能够提供 *额外的安全检查* 措施。
+
+unix域中用于标识客户和服务器的协议地址是普通文件系统中的路径名。
+
+*** 1.1. unix域套接字地址结构
+#+BEGIN_SRC C
+#include <sys.un.h>
+struct sockaddr_un{
+  sa_family_t sun_family;     /* AF_LOCAL */
+  char        sun_path[104];  /* null-terminated pathname */
+}
+#+END_SRC
+
+
+*** 1.2. unix域套接字的bind调用
+#+BEGIN_SRC C
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <stdio.h>
+#include <netdb.h>
+
+#define SA struct sockaddr
+
+int main(int argc, char **argv)
+{
+	int		sockfd;
+	socklen_t	len;
+	struct	sockaddr_un	addr1, addr2;
+
+	if (argc != 2){
+		printf("argument should be 2\n");
+		exit(1);
+	}
+
+	sockfd = socket(AF_LOCAL, SOCK_STREAM, 0);
+
+	unlink(argv[1]);
+
+	bzero(&addr1, sizeof(addr1));
+	addr1.sun_family = AF_LOCAL;
+	strncpy(addr1.sun_path, argv[1], sizeof(addr1.sun_path) - 1);
+	bind(sockfd, (SA *)&addr1, SUN_LEN(&addr1));
+
+	len = sizeof(addr2);
+	getsockname(sockfd, (SA *)&addr2, &len);
+	printf("bound name = %s, returned len = %d\n", addr2.sun_path, len);
+
+	return 0;
+}
+#+END_SRC
+
+程序输出：
+#+BEGIN_SRC bash
+/tmp/test /tmp/moose
+bound name = /tmp/moose, returned len = 13
+# 13: sun_family占2个字节， sun_path=/tmp/moose 占110个字节， 还有最后一个空字符
+$ ll /tmp/moose
+srwxrwxrwx 1 jer jer 0 Nov 19 09:23 /tmp/moose
+#+END_SRC
+
+*** 1.2.3 socketpair函数
+创建两个随后连接起来的套接字，仅用于 unix 域套接字
+#+BEGIN_SRC C
+#include <sys/socket.h>
+int socketpair(int family, int type, int protocl, int sockfd[2]);
+// 成功返回 非0， 出错返回-1
+#+END_SRC
+
+*** 1.3. 套接字函数
+1. 由bind创建的路径名默认访问权限应为0777，并按照当前umask值进行修正。
+2. 与unix域套接字关联的路径名应该是一个 *绝对路径名* ，而不是一个相对路径名。避免使用后者的原因是它的解析依赖于调用者的当前工作目录。
+也就是说，要是服务器捆绑一个相对路径名，客户就得在与服务器相同的目录中（或者必须知道这个目录）才能成功调用connect或sendto。
+3. 在connect调用中指定的路径名必须是一个当前绑定在某个打开的unix域套接字上的路径名，而且它们的套接字类型（字节流或数据报）也必须一致。
+出错条件包括：
+（a）该路径名已存在却不是一个套接字（unlink来删除已存在文件）；
+（b）该路径名已存在且是一个套接字，不过没有与之关联的打开的描述符；
+（c）该路径名已存在且是一个打开的套接字，不过类型不符。
+4. 调用connect连接一个unix域套接字涉及的权限测试等同于调用open以 *只写* 方式访问相应的路径名。
+5. unix域字节流套接字类似TCP套接字：它们都为进程提供一个无记录边界的字节流接口。
+6. 如果对于某个unix域字节流套接字的connect调用发现这个监听套接字的队列已满，调用就立即返回一个ECONNREFUSED错误。
+7. unix域数据报套接字类似于UDP套接字：它们都提供一个保留记录边界的不可靠的数据报服务。
+8. 在一个未绑定的unix域套接字上发送数据报不会自动给这个套接字捆绑一个路径名，connect也一样。
+
+** 2. unix域字节流客户/服务器程序
+服务端
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#define SA struct sockaddr
+#define MAXLINE 1024
+#define UNIXSTR_PATH "/tmp/unix.str"
+extern int errno;
+void sig_chld(int);
+void str_echo(int sockfd);
+
+int main(int argc, char **argv)
+{
+	int		listenfd, connfd;
+	pid_t	childpid;
+	socklen_t	clilen;
+	struct	sockaddr_un	cliaddr, servaddr;
+
+	listenfd = socket(AF_LOCAL, SOCK_STREAM, 0);
+
+	unlink(UNIXSTR_PATH);
+	bzero(&servaddr, sizeof(servaddr));
+	servaddr.sun_family = AF_LOCAL;
+	strcpy(servaddr.sun_path, UNIXSTR_PATH);
+
+	bind(listenfd, (SA *)&servaddr, sizeof(servaddr));
+	listen(listenfd, 5);
+
+	signal(SIGCHLD, sig_chld);
+
+	for ( ; ; ){
+		clilen = sizeof(cliaddr);
+		if ((connfd = accept(listenfd, (SA *)&cliaddr, &clilen)) < 0){
+			if (errno == EINTR)
+				continue;
+			else{
+				printf("accept error\n");
+				exit(0);
+			}
+		}
+
+		if ((childpid = fork()) == 0){
+			close(listenfd);
+			str_echo(connfd);
+			exit(0);
+		}
+
+		close(connfd);
+	}
+}
+
+void str_echo(int sockfd)
+{
+	char		recvline[MAXLINE];
+	int			n;
+
+	while ((n = read(sockfd, recvline, MAXLINE)) > 0){
+		recvline[n] = '\0';
+		write(sockfd, recvline, n);
+	}
+}
+
+void sig_chld(int signo)
+{
+	pid_t	pid;
+	int		stat;
+
+	while ((pid = waitpid(-1, &stat, WNOHANG)) > 0)
+		printf("child %d terminated\n", pid);
+	return;
+}
+#+END_SRC
+客户端：
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+
+#define SA struct sockaddr
+#define UNIXSTR_PATH "/tmp/unix.str"
+#define MAXLINE 1024
+void str_cli(FILE *fd, int sockfd);
+int main(int argc, char **argv)
+{
+	int		sockfd;
+	struct	sockaddr_un	servaddr;
+
+	sockfd = socket(AF_LOCAL, SOCK_STREAM, 0);
+
+	bzero(&servaddr, sizeof(servaddr));
+	servaddr.sun_family = AF_LOCAL;
+	strcpy(servaddr.sun_path, UNIXSTR_PATH);
+
+	connect(sockfd, (SA *)&servaddr, sizeof(servaddr));
+
+	str_cli(stdin, sockfd);
+
+	exit(0);
+}
+void str_cli(FILE *fd, int sockfd)
+{
+	int		n;
+	int		recvline[MAXLINE], sendline[MAXLINE];
+	while (fgets(sendline, MAXLINE, fd) != NULL){
+		write(sockfd, sendline, strlen(sendline));
+		if ((n = read(sockfd, recvline, MAXLINE)) > 0){
+			fputs(recvline, stdout);
+		}
+	}
+}
+#+END_SRC
+
+程序输出：
+#+BEGIN_SRC bash
+# 服务端：
+$ /tmp/ser
+child 1355 terminated
+child 1362 terminated
+
+# 客户端：
+$ /tmp/cli
+hello
+hello
+^C
+
+$ /tmp/cli
+world
+world
+^C
+#+END_SRC
+
+** 3. 描述符传递
+
+网上一篇好文章：https://cloud.tencent.com/developer/article/1008736
+
+当考虑从一个进程到另一个进程传递打开的描述符时，通常会想到：
+
+1. fork调用返回之后，子进程共享父进程的所有打开的描述符。
+
+2. exec调用执行之后，所有描述符通常保持打开状态不变。
+
+在第一个例子中，进程先打开一个描述符，再调用fork，然后父进程关闭这个描述符，子进程则处理这个描述符。这样一个打开的描述符就从父进程传递到子进程。那如何从子进程传递描述符到父进程呢？
+
+当前的unix系统提供了用于从一个进程向任一其他进程传递任一打开的描述符的方法。这种技术要求首先在这两个进程之间创建一个unix域套接字，然后使用sendmsg跨这个套接字发送一个特殊信息。这个消息由内核来专门处理，会把打开的描述符从发送进程传递到接收进程。
+
+在两个进程之间传递描述符涉及的步骤如下：
+
+1. 创建一个字节流或数据报的unix域套接字
+
+如果目标是fork一个子进程，让子进程打开待传递的描述符，再把它传递回父进程，那么父进程可以预先调用socketpair创建一个可用于父子进程之间交换描述符的流管道。
+
+如果进程之间没有亲缘关系，那么服务器必须创建一个unix域字节流套接字，bind一个路径名到该套接字，以允许客户进程connect到该套接字。然后客户可以向服务器发送一个打开某个描述符的请求，服务器再把该描述符通过unix域套接字传递回客户。
+
+2. 发送进程通过调用返回描述符的任一unix函数打开一个描述符，这些函数的例子有open，pipe，mkfifo，socket和accept，可以在进程之间传递的描述符不限类型。
+
+3. 发送进程创建一个msghdr结构，其中含有待传递的描述符。
+
+4. 接收进程调用recvmsg在来自步骤1的unix域套接字上接收这个描述符。
+
+测试程序：
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+
+extern int errno;
+#define BUFFSIZE 4096
+
+int my_open(const char *pathname, int mode);
+ssize_t read_fd(int fd, void *tr, size_t nbytes, int *recvfd);
+
+int main(int argc, char **argv)
+{
+	int		fd, n;
+	char	buff[BUFFSIZE];
+
+	if (argc != 2){
+		printf("argument should be 2\n");
+		return 1;
+	}
+
+	if ((fd = my_open(argv[1], O_RDONLY)) < 0){
+		printf("cannot open %s\n", argv[1]);
+		exit(1);
+	}
+
+	while ((n = read(fd, buff, BUFFSIZE)) > 0)
+		write(STDOUT_FILENO, buff, n);
+
+	return 0;
+}
+
+int my_open(const char *pathname, int mode)
+{
+
+	int		fd, sockfd[2], status;
+	pid_t	childpid;
+	char	c, argsockfd[10], argmode[10];
+
+	//socketpair函数创建两个随后连接起来的套接字，因为随后fork，所以实际上sockfd存储的是连接起来的父子进程
+	socketpair(AF_LOCAL, SOCK_STREAM, 0, sockfd);
+
+	if ((childpid = fork()) == 0){
+		close(sockfd[0]);	//因为子进程会完全复制父进程的描述符，所以要关闭父进程的描述符
+		snprintf(argsockfd, sizeof(argsockfd), "%d", sockfd[1]);	//子进程将描述符传递给流管道父进程的一端（即sockfd[1]）
+		snprintf(argmode, sizeof(argmode), "%d", mode);
+		execl("./openfile", "openfile", argsockfd, pathname, argmode, (char *)NULL);
+		printf("execl error\n");
+	}
+
+	close(sockfd[1]);		//父进程中关闭子进程的描述符(这里如果父进程关闭sockfd[1],则子进程就关闭sockfd[0],反之亦然)
+
+	waitpid(childpid, &status, 0);
+	if (WIFEXITED(status) == 0){
+		printf("child did not terminate\n");
+		exit(1);
+	}
+
+	if ((status = WEXITSTATUS(status)) == 0)
+		read_fd(sockfd[0], &c, 1, &fd);
+	else{
+		errno = status;
+		fd = -1;
+	}
+
+	close(sockfd[0]);
+	return (fd);
+
+	return 1;
+
+}
+
+ssize_t read_fd(int fd, void *ptr, size_t nbytes, int *recvfd)
+{
+	struct	msghdr  msg;
+	struct	iovec	iov[1];
+	ssize_t	n;
+#ifdef HAVE_MSGHDR_MSG_CONTROL
+	union{
+		struct		cmsghdr	cm;
+		char		control[CMSG_SPACE(sizeof(int))];
+	} control_un;
+	struct	cmsghdr *cmptr;
+
+	msg.msg_control = control_un.control;
+	msg.msg_controllen = sizeof(control_un.control);
+#else
+//	int		newfd;
+
+//	msg.msg_accrights = (caddr_t)&newfd;
+//	msg.msg_accrightslen = sizeof(int);
+#endif
+
+	msg.msg_name = NULL;
+	msg.msg_namelen = 0;
+
+	iov[0].iov_base = ptr;
+	iov[0].iov_len = nbytes;
+	msg.msg_iov = iov;
+	msg.msg_iovlen = 1;
+
+	if ((n = recvmsg(fd, &msg, 0)) <= 0)
+		return n;
+#ifdef HAVE_MSGHDR_MSG_CONTROL
+	if ((cmptr = CMSG_FIRSTHDR(&msg)) != NULL &&
+			cmptr->cmsg_len == CMSG_LEN(sizeof(int))){
+		if (cmptr->cmsg_level != SQL_SOCKET){
+			printf("control level != SOL_SOCKET\n");
+			exit(1);
+		}
+		if (cmptr->cmsg_type != SCM_RIGHTS){
+			printf("control type != SCM_RIGHTS\n");
+			exit(1);
+		}
+		*recvfd = *((int)*)CMSG_DATA(cmptr);
+	} else
+		*recvfd = -1;
+#else
+//	if (msg.msg_accrightslen == sizeof(int))
+//		*recvfd = newfd;
+//	else
+//		*recvfd = -1;
+#endif
+	return n;
+}
+#+END_SRC
+
+转自：https://www.kancloud.cn/digest/unix-fzyz-sb/168132
