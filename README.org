@@ -1,5 +1,9 @@
 * Linux_programing
 学习笔记：
+
+** 语言基础
+[[file:CPP/readme.org][C++]]
+
 ** 系统编程
 
 ** shell 编程

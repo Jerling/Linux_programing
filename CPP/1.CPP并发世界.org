@@ -1,0 +1,47 @@
+* 1. C++并发世界
+** 1. 并发与并行
+- 并发：同一时间段内执行多个任务
+- 并行：同一时刻执行多个任务，发生在多核处理器中。
+** 2. 使用并发好处
+1. 关注点分离（SOC）: 将相关代码和无关代码分离，利于理解和测试，并减少出错的可能性。
+2. 性能：充分利用多处理器系统的优势，提升任务执行性能
+** 3. C++并发历史
+- C++11之前标准不承认多线程，之后出现在C++11中，并有了线程的内存模型
+- C++11线程相关类
+  1. 全新的线程感知内存模型
+  2. 线程管理
+  3. 保护共享数据
+  4. 线程同步
+  5. 低级原子操作
+** 4. 并发入门
+实战1_1：
+1. 经典的 Hello World 程序
+#+BEGIN_SRC cpp
+#include <iostream>
+int main() {
+    std::cout << "Hello World!" << std::endl;
+    return 0;
+}
+#+END_SRC
+2. 多线程版
+#+BEGIN_SRC cpp
+#include <iostream>
+#include <thread>
+void hello() {
+    std::cout << "Hello Concurrent World!" << std::endl;
+}
+int main() {
+    std::thread t(hello);
+    t.join();
+    return 0;
+}
+#+END_SRC
+
+程序输出：
+#+BEGIN_SRC screen
+g++ 1_1.cc -o /tmp/test -std=c++11 -pthread && time /tmp/test
+Hello Concurrent World!
+/tmp/test  0.00s user 0.00s system 0% cpu 0.005 total
+
+Compilation finished at Thu Nov 22 11:40:46
+#+END_SRC

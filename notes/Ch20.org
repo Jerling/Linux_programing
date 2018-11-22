@@ -1,0 +1,279 @@
+
+* UNP卷1：第二十章（广播）
+
+** 1. 单播和广播的比较
+*** 1.1. UDP数据包单播实例：
+https://box.kancloud.cn/2016-06-20_57678b30a2305.jpg
+
+1. 通过ARP将IP地址转换为目的以太网地址： =00:0a:95:79:bc:b4=
+
+2. 中间主机的以太网接口看到该帧后把它的目的以太网地址与自己的以太网地址（00:04:ac:17:bf:38）进行比较。
+既然它们不一致，该接口于是忽略这个帧。可见单播帧不会对该主机造成任何额外开销，因为忽略它们的是接口而不是主机。
+
+3. 右侧主机的以太网接口也看到这个帧，当它比较该帧的目的以太网地址和自己的以太网地址时，会发现它们相同。
+该接口于是读入整个帧，读入完毕后可能产生一个硬件中断，致使相应设备驱动程序从接口内存中读取该帧。
+既然该帧类型为 =0x8000= ，该帧承载的分组于是被置于IP的输入队列。
+
+单播IP数据报仅通过目的IP地址指定的单个主机接收。子网上的其他主机都不受任何影响。
+
+*** 1.2. UDP数据报广播示例:
+https://box.kancloud.cn/2016-06-20_57678b30c4b93.jpg
+
+1. 左侧主机发送该数据报时候发现，IP地址定向为广播地址，则将此IP映射为： =ff:ff:ff:ff:ff:ff= 的以太网地址。
+这个地址使得该子网上的每一个以太网接口都接收该帧。
+
+2. 右侧的那个主机把该UDP数据报传递给绑定端口520的应用进程。一个应用进程无需就为接收广播UDP数据报而进行任何特殊处理：
+它只需要创建一个UDP套接字，并把应用的端口号捆绑到其上。
+
+3. 然而中间的那个主机没有任何应用进程绑定UDP端口520.该主机的UDP代码于是丢弃这个已收取的数据报。
+该主机绝不能发送一个ICMP端口不可达消息，因为这么做可能产生广播风暴，即子网上大量主机几乎同时产生一个响应，导致网络在这段时间内不可用。
+
+4. 左侧主机的数据报也被传递给自己。
+
+*** 1.3. 广播存在的根本问题：
+    子网上未参加相应广播应用的所有主机也不得不沿着协议栈一路向上完整的处理收取的UDP广播数据报，
+直到该数据报历经UDP层时被丢弃为止。另外，子网上所有非IP的主机也不得不在数据链路层街搜完整的帧，然后在丢弃它。
+
+
+实例：
+
+服务端：
+#+BEGIN_SRC C
+#include <sys/socket.h>
+#include <stdio.h>
+#include <netinet/in.h>
+#include <time.h>
+
+#define MAXLINE 1024
+#define SA struct sockaddr
+
+int main(int argc, char **argv)
+{
+	struct sockaddr_in	srvaddr;
+	int		sockfd, on = 1;
+	int		num, i;
+	time_t	ticks;
+	char	mesg[MAXLINE + 1];
+
+	if (argc != 3){
+		printf("usage:%s<ip address><port>\n", argv[0]);
+		exit(0);
+	}
+
+	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(int));
+	bzero(&srvaddr, sizeof(srvaddr));
+	srvaddr.sin_family = AF_INET;
+	if (inet_pton(AF_INET, argv[1], &srvaddr.sin_addr) <= 0){
+		printf("wrong dest ip address\n");
+		exit(0);
+	}
+	srvaddr.sin_port = htons(atoi(argv[2]));
+	for ( ; ; ){
+		ticks = time(NULL);
+		snprintf(mesg, sizeof(mesg), "%.24s\r\n", ctime(&ticks));
+		sendto(sockfd, mesg, strlen(mesg), 0, (SA *)&srvaddr, sizeof(srvaddr));
+		sleep(5);
+	}
+
+	return 0;
+}
+#+END_SRC
+
+客户端：
+#+BEGIN_SRC C
+#include <sys/socket.h>
+#include <stdio.h>
+#include <netinet/in.h>
+#include <sys/types.h>
+
+#define MAXLINE 1024
+#define SA struct sockaddr
+
+int main(int argc, char **argv)
+{
+	struct sockaddr_in	cliaddr;
+	int		sockfd, n, opt;
+	char	mesg[MAXLINE + 1];
+
+	if (argc != 2){
+		printf("usage:%s<port>\n", argv[1]);
+		exit(0);
+	}
+
+	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	bzero(&cliaddr, sizeof(cliaddr));
+	cliaddr.sin_port = htons(atoi(argv[1]));
+	cliaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	opt = SO_REUSEADDR;
+	setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+	bind(sockfd, (SA *)&cliaddr, sizeof(cliaddr));
+
+	n = read(sockfd, mesg, MAXLINE);
+	if (n > 0){
+		mesg[n] = 0;
+		printf("%s\n", mesg);
+	}
+
+	return 0;
+}
+#+END_SRC
+
+程序输出：
+#+BEGIN_SRC bash
+# 服务端
+/tmp/ser 127.0.0.1 8080
+
+# 客户端1
+$ /tmp/cli 8080
+Wed Nov 21 09:38:05 2018
+
+# 客户端2
+$ /tmp/cli 8080
+Wed Nov 21 09:38:00 2018
+#+END_SRC
+
+实例2：
+
+服务端：
+
+#+BEGIN_SRC C
+#include <sys/socket.h>
+#include <signal.h>
+#include <stdio.h>
+#include <netinet/in.h>
+#include <time.h>
+#include <errno.h>
+#include <arpa/inet.h>
+#include <string.h>
+#include <stdlib.h>
+
+extern int errno;
+#define MAXLINE 1024
+#define SA struct sockaddr
+
+static void recvfrom_alarm(int signo);
+void dg_cli(FILE *fp, int sockfd, const SA *pservaddr, socklen_t servlen);
+
+int main(int argc, char **argv)
+{
+    struct sockaddr_in      srvaddr;
+    int     sockfd;
+
+    if (argc != 3){
+        printf("usage:%s<ip addr><port>\n", argv[0]);
+        exit(0);
+    }
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    bzero(&srvaddr,sizeof(srvaddr));
+    srvaddr.sin_family = AF_INET;
+    inet_pton(AF_INET, argv[1], &srvaddr.sin_addr);
+    srvaddr.sin_port = htons(atoi(argv[2]));
+
+    dg_cli(stdin, sockfd, (SA *)&srvaddr, sizeof(srvaddr));
+
+    return 0;
+}
+
+static void recvfrom_alarm(int signo)
+{
+    return;
+}
+void dg_cli(FILE *fp, int sockfd, const SA *pservaddr, socklen_t servlen)
+{
+    int     n;
+    const   int on = 1;
+    char    sendline[MAXLINE], recvline[MAXLINE + 1];
+    socklen_t   len;
+    struct sockaddr *preply_addr;
+
+    preply_addr = malloc(servlen);
+
+    setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+
+    signal(SIGALRM, recvfrom_alarm);
+    while (fgets(sendline, MAXLINE, fp) != NULL){
+        sendto(sockfd, sendline, strlen(sendline), 0, pservaddr, servlen);
+
+        len = servlen;
+        n = recvfrom(sockfd, recvline, MAXLINE, 0, preply_addr, &len);
+        if (n < 0){
+            if (errno == EINTR)
+                break;
+            else
+                printf("recvfrom error\n");
+        } else{
+            recvline[n] = 0;
+            inet_ntop(AF_INET, &preply_addr, sendline, sizeof(sendline));
+            printf("from %s:%s\n", sendline, recvline);
+        }
+    }
+
+    free(preply_addr);
+}
+#+END_SRC
+
+客户端：
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <time.h>
+#include <netinet/in.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAXLINE 1024
+#define SA struct sockaddr
+
+int main(int argc, char **argv)
+{
+    struct sockaddr_in  cliaddr;
+    int     sockfd, n, len;
+    char    mesg[MAXLINE];
+    time_t  ticks;
+
+    if (argc != 2){
+        printf("usage:%s<port>\n", argv[0]);
+        exit(0);
+    }
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    bzero(&cliaddr, sizeof(cliaddr));
+    cliaddr.sin_port = htons(atoi(argv[1]));
+    cliaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    cliaddr.sin_family = AF_INET;
+
+    bind(sockfd, (SA *)&cliaddr, sizeof(cliaddr));
+
+    for ( ; ; ){
+        len = sizeof(cliaddr);
+        n = recvfrom(sockfd, mesg, MAXLINE, 0, (SA *)&cliaddr, &len);
+        if (n < 0){
+            continue;
+        }
+        mesg[n] = 0;
+        printf("recv: %s\n", mesg);
+        ticks = time(NULL);
+        snprintf(mesg, sizeof(mesg), "%.24s", ctime(&ticks));
+        sendto(sockfd, mesg, 2424, 0, (SA *)&cliaddr, len);
+    }
+
+    return 0;
+}
+#+END_SRC
+
+程序输出：
+#+BEGIN_SRC bash
+# 服务端
+/tmp/ser 127.0.0.1 8080
+hello
+from 16.48.210.1:Wed Nov 21 09:51:57 2018
+
+# 客户端：
+/tmp/cli 8080
+recv: hello
+#+END_SRC
+
+转自：https://www.kancloud.cn/digest/unix-fzyz-sb/168133
