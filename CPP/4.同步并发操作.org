@@ -1,0 +1,388 @@
+* 4.同步并发操作
+** 4.1. 等待一个事件或其他条件
+1. 持续检查 -- 轮询)
+
+2.  =sd::this_thread::sleep_for()= 周期性间歇等待
+#+begin_src cpp
+bool flag;
+std::mutex m;
+void wait_for_flag()
+{
+      std::unique_lock<std::mutex> lk(m);
+      while(!flag)
+      {
+            lk.unlock(); // 1 解锁互斥量
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // 2 休眠100ms  在此期间其他线程可获取锁并设置标识
+            lk.lock(); // 3 再锁互斥量
+      }
+}
+#+end_src
+
+3. C++标准库中的工具等待事件的发生 -- 条件变量
+
+*** 4.1.1. 等待条件达成
+1. C++ 标准库提供两套条件变量：  =std::condition_variable= 和
+=std::condition_variable_any= ; 都包含于  =condition_variable= 头文件中
+      - 前者仅限于与  =std::metux=
+        一起工作，后者与满足最低标准的互斥量一起工作
+      - 后者体积、性能以及系统资源使用方面会产生额外的开销
+#+begin_src cpp
+std::mutex mut;
+std::queue<data_chunk> data_queue; // 1
+std::condition_variable data_cond;
+void data_preparation_thread()     // 生产者线程
+{
+      while(more_data_to_prepare())
+      {
+            data_chunk const data=prepare_data();
+            std::lock_guard<std::mutex> lk(mut);
+            data_queue.push(data); // 生产数据
+            data_cond.notify_one(); // 通知消费者
+      }
+}
+void data_processing_thread()
+{
+      while(true)
+      {
+            std::unique_lock<std::mutex> lk(mut); // 4
+            data_cond.wait(
+            lk,[]{return !data_queue.empty();}); // 等待数据到来，返回 ture
+                                                 // 则解锁互斥量并对 lk 加锁
+            data_chunk data=data_queue.front();
+            data_queue.pop();
+            lk.unlock(); // 6
+            process(data);
+            if(is_last_chunk(data))
+            break;
+      }
+}
+#+end_src
+
+** 4.2. 使用期望等待一次性事件
+C++标准库称一次性事件为  *期望* 。
+1.  =std::future<>= 效仿 =std::unique_ptr= ：一个实例只能关联一个事件。
+2.  =std::shared_future<>= 效仿  =std::shared_ptr= .
+3.  =future= 对象本身不提供同步访问，多个线程访问一个独立  =future=
+时必须使用互斥量或其他同步机制。
+4.  =shared_future=
+对象访问的是实例的副本，不需要期望同步，即使是同一个异步结果。
+
+*** 4.2.1. 带返回值的后台任务
+1.  =std::async= 函数模板启动一个异步任务并返回一个  =std::future=
+对象，然后调用  =get()= 获取最终结果。
+#+begin_src cpp
+#include <future>
+#include <iostream>
+int find_the_answer_to_ltuae();
+void do_other_stuff();
+int main()
+{
+      // 启动后台计算并将结果返回给 the_answer
+      std::future<int> the_answer=std::async(find_the_answer_to_ltuae);
+      do_other_stuff();    // 执行其他任务
+      // 调用 get() 时会阻塞线程直到期望就绪
+      std::cout<<"The answer is "<<the_answer.get()<<std::endl;
+}
+#+end_src
+2.  =std::launch::async= 和  =std::launch::deferred= 参数
+#+begin_src cpp
+auto f6=std::async(std::launch::async,Y(),1.2); // 在新线程上执行
+auto f7=std::async(std::launch::deferred,baz,std::ref(x)); // 在wait()或get()调用时执行
+auto f8=std::async(
+                  std::launch::deferred | std::launch::async,
+                  baz,std::ref(x)); // 实现选择执行方式
+auto f9=std::async(baz,std::ref(x));
+f7.wait(); // 调用延迟函数
+#+end_src
+
+*** 4.2.2. 任务与期望
+1.  =std::packaged_task= 对一个函数或可调用对象绑定一个对象。
+#+begin_src cpp
+// std::packaged_task<> 的偏特化
+template<>
+class packaged_task<std::string(std::vector<char>*,int)>
+{
+      public:
+      template<typename Callable>
+      explicit packaged_task(Callable&& f);
+      std::future<std::string> get_future();
+      void operator()(std::vector<char>*,int);
+};
+#+end_src
+
+实例：图形界面线程
+#+begin_src cpp
+#include <deque>
+#include <mutex>
+#include <future>
+#include <thread>
+#include <utility>
+std::mutex m;
+std::deque<std::packaged_task<void()> > tasks;
+bool gui_shutdown_message_received();
+void get_and_process_gui_message();
+
+void gui_thread() // 1
+{
+      while(!gui_shutdown_message_received()) // 2
+      {
+            get_and_process_gui_message(); // 3
+            std::packaged_task<void()> task;
+            {     // 限定 std::lock_guard 的作用域
+                  std::lock_guard<std::mutex> lk(m);
+                  if(tasks.empty()) // 4
+                        continue;
+                  task=std::move(tasks.front()); // 5
+                  tasks.pop_front();
+            }
+            task(); // 6
+      }
+}
+std::thread gui_bg_thread(gui_thread);
+template<typename Func>
+std::future<void> post_task_for_gui_thread(Func f)
+{
+      std::packaged_task<void()> task(f); // 7
+      std::future<void> res=task.get_future(); // 8
+      std::lock_guard<std::mutex> lk(m); // 9
+      tasks.push_back(std::move(task)); // 10
+      return res;
+}
+#+end_src
+
+*** 4.2.3. 使用  =std::promises=
+实例：使用“承诺”解决单线程多连接问题
+#+begin_src cpp
+#include <future>
+void process_connections(connection_set& connections)
+{
+      while(!done(connections)) // 1
+      {
+            for(connection_iterator // 2
+            connection=connections.begin(),end=connections.end();
+            connection!=end;
+            ++connection)
+            {
+                  if(connection->has_incoming_data()) // 3
+                  {
+                        data_packet data=connection->incoming();
+                        std::promise<payload_type>& p=connection->get_promise(data.id); // 4
+                        p.set_value(data.payload);
+                  }
+                  if(connection->has_outgoing_data()) // 5
+                  {
+                        outgoing_packet data=connection->top_of_outgoing_queue();
+                        connection->send(data.payload);
+                        data.promise.set_value(true); // 6
+                  }
+            }
+      }
+}
+#+end_src
+
+*** 4.2.4.  存储异常
+#+begin_src cpp
+1. 异步异常存储
+double square_root(double x)
+{
+      if(x<0)
+      {
+            throw std::out_of_range(“x<0”);
+      }
+      return sqrt(x);
+}
+std::future<double> f=std::async(square_root,-1);
+double y=f.get();
+#+end_src
+以上代码会引发异常，并存储在结果数据中，之后将 "期望" 状态转为 "就绪状态",
+调用 =get()= 就会抛出异常。
+
+2. std::promise 存储异常
+
+使用  =set_exception= 代替  =set_value= ;
+#+begin_src cpp
+extern std::promise<double> some_promise;
+try
+{
+      some_promise.set_value(calculate_value());
+}
+catch(...)
+{
+      some_promise.set_exception(std::current_exception());
+}
+#+end_src
+
+=std::current_exception= 检索抛出的异常，可用  =std::copy_exception=
+作为替代，它会直接存储新的异常而不抛。
+#+begin_src cpp
+some_promise.set_exception(std::copy_exception(std::logic_error("foo ")));
+#+end_src
+
+3. 当状态没就绪时调用 =std::promise= 和  =std::packaged_task=
+的析构函数，将会一个  =std::future_errc::broken_promise= 的
+=std::packaged_error= 的异常。
+
+*** 4.2.5. 多个线程的等待
+1.  =std::shared_future= 实例同步  =std::future= 
+#+begin_src cpp
+std::promise<int> p;
+std::future<int> f(p.get_future());
+assert(f.valid());// 1 "期望" f 是合法的
+std::shared_future<int> sf(std::move(f));
+assert(!f.valid()); // 2 "期望" f 现在是不合法的
+assert(sf.valid()); // 3 sf 现在是合法的
+#+end_src
+
+2. 直接构建  =std::shared_future= 对象
+#+begin_src cpp
+std::promise<std::string> p;
+std::shared_future<std::string> sf(p.get_future()); // 1 隐式转移所有权
+#+end_src
+
+3. 使用  =std::future= 的  =share()= 创建
+#+begin_src cpp
+std::promise< std::map< SomeIndexType, SomeDataType,SomeComparator,SomeAllocator>::iterator> p;
+auto sf=p.get_future().share();
+#+end_src
+
+** 4.3 限定等待时间
+*** 4.3.1. 时钟
+1. 调用静态成员函数  =std::chrono::system_clock::now()= 获取当前时间
+2.  =std::chrono::system_clock::is_steady()= 检查时钟是否稳定(当时钟节拍均匀分布(无论是否与周期匹配)，并且不可调整，这种时钟就称为稳定时钟)
+3.  =std::chrono::system_clock= 是不稳定的(系统时钟的"实际时间")
+4.  =std::chrono::steady_clock= 是稳定的
+5.  =std::chrono::high_resolution_clock= 具有最小节拍周期的时钟
+
+*** 4.3.2. 时延
+1.  =std::chrono::duration<>= 处理时延。第一个模板参数是一个类型
+表示(比如，int，long或double)，第二个模板参数是制定部分，表示每一个单元所用秒数
+2. 时延转换：隐式的，显示转换用  =std::chrono::duration_cast<>= 
+#+begin_src cpp
+std::chrono::milliseconds ms(54802);
+std::chrono::seconds s=std::chrono::duration_cast<std::chrono::seconds>(ms);
+// 这里直接截断而不是舍入
+#+end_src
+3. 延迟支持计算，通过 =count()= 成员获得单位时间的数量（如 =std::chrono::milliseconds(1234).count()= 就是1234）
+4. 基于时延的等待(基于稳定时钟)
+#+begin_src cpp
+std::future<int> f=std::async(some_task);
+if(f.wait_for(std::chrono::milliseconds(35))==std::future_status::ready)
+      do_something_with(f.get());
+#+end_src
+
+*** 4.3.3. 时间点
+1.  = std::chrono::time_point<> =
+的类型模板;第一个参数用来指定所要使用的时钟，第二个函数参
+数用来表示时间的计量单位(特化的 std::chrono::duration<> )
+2. =std::chrono::time_point<>= 实例可以加减获取一个新的时间点，如：
+=std::chrono::hight_resolution_clock::now() + std::chrono::nanoseconds(500)= 讲得到 500 纳秒后的时间。
+3. 代码块计时
+#+begin_src cpp
+auto start=std::chrono::high_resolution_clock::now();
+do_something();
+auto stop=std::chrono::high_resolution_clock::now();
+std::cout<<”do_something() took “
+<<std::chrono::duration<double,std::chrono::seconds>(stop - start).count()
+<<” seconds”<<std::endl;
+#+end_src
+4. 实例等待一个条件变量 -- 超时功能
+#+begin_src cpp
+#include <condition_variable>
+#include <mutex>
+#include <chrono>
+std::condition_variable cv;
+bool done;
+std::mutex m;
+bool wait_loop()
+{
+      auto const timeout= std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+      std::unique_lock<std::mutex> lk(m);
+      while(!done)
+      {
+            if(cv.wait_until(lk,timeout)==std::cv_status::timeout)
+            break;
+      }
+      return done;
+}
+#+end_src
+
+*** 4.3.4. 超时功能的函数
+1. =std::this_thread::sleep_for()= 和  =std::this_thread::sleep_until()=
+:前者等待时延(如十分钟后)，后者等到时间点(00:00)。
+2. 超时锁： =std::mutex= 和 =std::recursive_mutex= 都不支持超时锁，但
+是 =std::timed_mutex= 和 =std::recursive_timed_mutex= 支持
+
+** 4.4. 同步操作
+*** 4.4.1. future 的函数式编程
+1. 函数编程：函数结果只依赖于传入函数的参数，并不依赖外部状态。
+2. 实例：函数式快排实现
+1) 顺序版
+#+begin_src cpp
+template<typename T>
+std::list<T> sequential_quick_sort(std::list<T> input)
+{
+      if(input.empty())
+      {
+            return input;
+      }
+      std::list<T> result;
+
+      // 将input第一个位置移动到result的begin位置
+      // splice 有四种重载形式，参考 :
+      // [[http://www.cplusplus.com/reference/list/list/splice/][http://www.cplusplus.com/reference/list/list/splice/]]
+      result.splice(result.begin(),input,input.begin());
+      T const& pivot=*result.begin(); // 2
+      auto divide_point=std::partition(input.begin(),input.end(),[&](T const& t){return t<pivot;}); // 3
+      std::list<T> lower_part;
+      lower_part.splice(lower_part.end(),input,input.begin(),divide_point); // 4
+      auto new_lower(sequential_quick_sort(std::move(lower_part))); // 使用move防止过多拷贝
+      auto new_higher(sequential_quick_sort(std::move(input))); // 6
+      result.splice(result.end(),new_higher); // 7
+      result.splice(result.begin(),new_lower); // 8
+      return result;
+}
+#+end_src
+2) 并行版
+#+begin_src cpp
+template<typename T>
+std::list<T> parallel_quick_sort(std::list<T> input)
+{
+      if(input.empty())
+      {
+            return input;
+      }
+      std::list<T> result;
+      result.splice(result.begin(),input,input.begin());
+      T const& pivot=*result.begin();
+      auto divide_point=std::partition(input.begin(),input.end(),[&](T const& t){return t<pivot;});
+      std::list<T> lower_part;
+      lower_part.splice(lower_part.end(),input,input.begin(),divide_point);
+      std::future<std::list<T> > new_lower(std::async(&parallel_quick_sort<T>,std::move(lower_part)));
+      auto new_higher(parallel_quick_sort(std::move(input))); // 2
+      result.splice(result.end(),new_higher); // 3
+      result.splice(result.begin(),new_lower.get()); // 4
+      return result;
+}
+#+end_src
+缺点：会创建过多的线程(约为递归次数的二次方个线程), 应该使用调用 get
+时运行线程的方式(std::launch::deferred)
+
+3) spawn_task实现(可用此实现并行快排)
+#+begin_src cpp
+template<typename F,typename A>
+// std::result_of 在编译时推导可调用对象的返回值
+std::future<std::result_of<F(A&&)>::type>
+spawn_task(F&& f,A&& a)
+{
+      typedef std::result_of<F(A&&)>::type result_type;
+      std::packaged_task<result_type(A&&)> task(std::move(f)));
+      std::future<result_type> res(task.get_future());
+      std::thread t(std::move(task),std::move(a));
+      t.detach();
+      return res;
+}
+#+end_src
+
+** 4.5. 总结
+本章节学了很多关于等待线程数据和时钟管理的相关函数
