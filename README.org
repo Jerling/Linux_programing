@@ -58,8 +58,10 @@
 
 [[file:notes/Ch20.org][UNP卷1：第二十章（广播）]]
 
-[[file:notes/Ch21.org][TCP/IP详解卷1：第一章(概述)]]
-
-[[file:notes/Ch22.org][TCP/IP详解卷1：第二章（链路层）]]
-
 转自：[[https://www.kancloud.cn/digest/unix-fzyz-sb/168123][https://www.kancloud.cn/digest/unix-fzyz-sb/168123]]
+
+** TCP/IP详解卷1
+
+[[file:tcp_ip/Ch03.org][TCP/IP详解卷1：第三章(IP: 网际协议)]]
+
+[[file:tcp_ip/Ch04.org][TCP/IP详解卷1：第四章(ARP 协议)]]
