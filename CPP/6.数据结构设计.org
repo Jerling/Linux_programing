@@ -1,0 +1,159 @@
+* 基于锁的并发数据结构设计
+** 意义
+1. 线程安全数据结构
+   - 并发访问并进行相同或不同的操作
+   - 在线程自治域看到该数据结构
+   - 无数据丢失和损毁，维持数据需要的原样
+   - 无条件竞争
+2. 序列化：线程轮流访问被保护的数据。这其实是对数据进行串行的访问，而非并发。
+3. 设计并发数据结构思路
+   - 减少保护区域
+   - 减少序列化操作
+*** 指南
+1. 保证线程安全
+   1. 确保无线程能够看到，数据结构的“不变量”破坏时的状态。
+   2. 小心那些会引起条件竞争的接口，提供完整操作的函数，而非操作步骤。
+   3. 注意数据结构的行为是否会产生异常，从而确保“不变量”的状态稳定。
+   4. 将死锁的概率降到最低。使用数据结构时，需要限制锁的范围，且避免嵌套锁的存在。
+** 基于锁的并发数据结构
+1. 线程安全栈的类定义
+#+BEGIN_SRC cpp
+#include <exception>
+struct empty_stack: std::exception
+{
+  const char* what() const throw();
+};
+template<typename T>
+class threadsafe_stack
+{
+private:
+  std::stack<T> data;
+  mutable std::mutex m;
+#+END_SRC
+定义一个互斥量 =m= 保证基本的线程安全，对每个成员函数进行加锁保护。
+
+2. 线程安全队列
+#+BEGIN_SRC cpp
+template<typename T>
+class threadsafe_queue
+{
+private:
+  mutable std::mutex mut;
+  std::queue<T> data_queue;
+  std::condition_variable data_cond;
+}
+#+END_SRC
+使用锁 =m= 对每个成员函数进行加锁保护，使用条件变量检查队列是否有数据。
+
+3. 线程安全队列——使用细粒度锁和条件变量
+** 基于锁设计更加复杂的数据结构
+*** 使用锁的线程安全查询表
+1. 映射结构的设计：哈希表
+2. 定义线程安全的桶结构
+#+BEGIN_SRC cpp
+class bucket_type
+{
+private:
+  typedef std::pair<Key,Value> bucket_value;
+  typedef std::list<bucket_value> bucket_data;
+  typedef typename bucket_data::iterator bucket_iterator;
+  bucket_data data;
+  mutable boost::shared_mutex mutex; // 1
+  bucket_iterator find_entry_for(Key const& key) const // 2
+  {
+    return std::find_if(data.begin(),data.end(),
+                       [&](bucket_value const& item){return item.first==key;});
+  }
+public:
+  Value value_for(Key const& key,Value const& default_value) const
+  {
+    boost::shared_lock<boost::shared_mutex> lock(mutex); // 3
+    bucket_iterator const found_entry=find_entry_for(key);
+    return (found_entry==data.end())?default_value:found_entry->second;
+  }
+  void add_or_update_mapping(Key const& key,Value const& value)
+  {
+    std::unique_lock<boost::shared_mutex> lock(mutex); // 4
+    bucket_iterator const found_entry=find_entry_for(key);
+    if(found_entry==data.end())
+    {
+      data.push_back(bucket_value(key,value));
+    }
+    else
+    {
+      found_entry->second=value;
+    }
+  }
+  void remove_mapping(Key const& key)
+  {
+    std::unique_lock<boost::shared_mutex> lock(mutex); // 5
+    bucket_iterator const found_entry=find_entry_for(key);
+    if(found_entry!=data.end())
+    {
+      data.erase(found_entry);
+    }
+  }
+};
+#+END_SRC
+这样每一个桶都有一个锁，其它线程可以访问查询表的其它桶，从而实现并发
+
+3. 线程安全查询表
+#+BEGIN_SRC cpp
+template<typename Key,typename Value,typename
+Hash=std::hash<Key> >
+class threadsafe_lookup_table
+{
+  std::vector<std::unique_ptr<bucket_type> > buckets; // 每个buckets是线程安全的
+  Hash hasher;
+  bucket_type& get_bucket(Key const& key) const // 7
+  {
+    std::size_t const bucket_index=hasher(key)%buckets.size();
+    return *buckets[bucket_index];
+  }
+  void add_or_update_mapping(Key const& key,Value const& value)
+  {
+    get_bucket(key).add_or_update_mapping(key,value); // bucket内部实现线程安全
+  }
+  ...
+}
+#+END_SRC
+*** 使用锁的线程安全链表
+    基本思路：每个节点拥有一个互斥量
+
+1. 定义线程安全的 Node
+#+BEGIN_SRC cpp
+struct node // 1
+{
+  std::mutex m;
+  std::shared_ptr<T> data;
+  // 使用 unique_ptr 方便转移所有权
+  std::unique_ptr<node> next;
+  node(): // 2
+  next(){}
+  node(T const& value):data(std::make_shared<T>(value)){}
+};
+#+END_SRC
+
+2. 互斥锁的传递
+#+BEGIN_SRC cpp
+template<typename Function>
+void for_each(Function f) // 7
+{
+  node* current=&head;
+  std::unique_lock<std::mutex> lk(head.m); // 锁头
+  while(node* const next=current->next.get()) //
+  {
+    std::unique_lock<std::mutex> next_lk(next->m); // 锁当前节点
+    lk.unlock(); // 解上一的锁(包括头)
+    f(*next->data); // 互斥访问
+    current=next;
+    lk=std::move(next_lk); // 将锁所有权转移
+  }
+  // 这里没有 unlock 因为 unique_ptr 出了作用域自动 unlock
+}
+#+END_SRC
+** 总结
+   本章学习了如何设计线程安全数据结构，安全栈和安全队列都是在整个结构上进行加锁，
+考虑到只操作一端，所以这种并发设计最简单。但是对于哈希表和链表，为了提高并发能力，
+可以使用细粒度锁，比如对哈希的每一个桶加锁，就不会影响其它桶的访问，从而使并发能力
+提升 N(桶数) 倍，链表同理，进行节点，不过注意锁的传递。
