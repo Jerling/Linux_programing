@@ -2,7 +2,9 @@
 学习笔记：
 
 ** 语言基础
-[[file:CPP/readme.org][C++]]
+[[file:CPP/readme.org][1. C++并发编程]]
+
+[[https://github.com/huihut/interview][2. C/C++面试知识总结]]
 
 ** 系统编程
 

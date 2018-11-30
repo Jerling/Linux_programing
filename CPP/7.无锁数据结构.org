@@ -1,0 +1,120 @@
+* 无锁数据结构设计
+- 不使用阻塞库的数据结构和算法，被称为无阻塞结构。
+- 无锁结构，就意味着线程可以并发的访问这个数据结构
+** 无锁安全栈
+#+BEGIN_SRC cpp
+template<typename T>
+class lock_free_stack
+{
+private:
+  struct node
+  {
+    std::shared_ptr<T> data;
+    node* next;
+    node(T const& data_):data(std::shared_ptr<T>(data_)){}
+  };
+  std::atomic<node*> head;
+public:
+  void push(T const& data)
+  {
+    node* const new_node=new node(data); // 2
+    new_node->next=head.load(); // 3
+    while(!head.compare_exchange_weak(new_node->next,new_node));
+    // 交换head 和 new_node, 失败后无须load, 会自动load
+  }
+  std::shared_ptr<T> pop()
+  {
+    node* old_head=head.load();
+    while(!head.compare_exchange_weak(old_head,old_head->next));
+    return old_head ? old_head->data : shared_ptr<T>();
+  }
+private:
+  std::atomic<unsigned> threads_in_pop; // 1 原子变量
+  void try_reclaim(node* old_head);
+public:
+  std::shared_ptr<T> pop()
+  {
+    ++threads_in_pop; // 2 在做事之前，计数值加1
+    node* old_head=head.load();
+    while(old_head &&
+    !head.compare_exchange_weak(old_head,old_head->next));
+    std::shared_ptr<T> res;
+    if(old_head)
+    {
+      res.swap(old_head->data); // 3 回收删除的节点
+    }
+    try_reclaim(old_head); // 4 从节点中直接提取数据，而非拷贝指针
+    return res;
+  }
+private:
+  std::atomic<node*> to_be_deleted;
+  static void delete_nodes(node* nodes)
+  {
+    while(nodes)
+    {
+      node* next=nodes->next;
+      delete nodes;
+      nodes=next;
+    }
+  }
+  void try_reclaim(node* old_head)
+  {
+    if(threads_in_pop==1) // 1
+    {
+      node* nodes_to_delete=to_be_deleted.exchange(nullptr); //2 声明“可删除”列表
+      if(!--threads_in_pop) // 3 是否只有一个线程调用pop()？
+      {
+        delete_nodes(nodes_to_delete); // 4
+      }
+      else if(nodes_to_delete) // 5
+      {
+        chain_pending_nodes(nodes_to_delete); // 6
+      }
+      delete old_head; // 7
+    }
+    else
+    {
+      chain_pending_node(old_head); // 8
+      --threads_in_pop;
+    }
+  }
+  void chain_pending_nodes(node* nodes)
+  {
+    node* last=nodes;
+    while(node* const next=last->next) // 9 让next指针指向链表的末尾
+    {
+      last=next;
+    }
+    chain_pending_nodes(nodes,last);
+  }
+  void chain_pending_nodes(node* first,node* last)
+  {
+    last->next=to_be_deleted; // 10
+    while(!to_be_deleted.compare_exchange_weak( // 11 用循环来保证last->next的正确性
+          last->next,first));
+  }
+  void chain_pending_node(node* n)
+  {
+    chain_pending_nodes(n,n); // 12
+  }
+};
+#+END_SRC
+上面这段代码没有考虑风险指针和应用失效等安全问题，源码见书本：https://chenxiaowei.gitbooks.io/cpp_concurrency_in_action/content/content/chapter7/7.2-chinese.html
+** 建议
+1. 使用 =std::memory_order_seq_cst= 的原型
+2. 对无锁内存的回收策略
+   - 等待无线程对数据结构进行访问时，删除所有等待删除的对象
+   - 使用风险指针来标识正在被线程访问的对象
+   - 对对象进行引用计数，当没有线程对对象进行引用时，将其删除
+3. 小心[[https://en.wikipedia.org/wiki/ABA_problem][ABA问题]]
+
+  在“基于比较/交换”的算法中要格外小心“ABA问题”。其流程是:
+  - 线程1读取原子变量x，并且发现其值是A。
+  - 线程1对这个值进行一些操作，比如，解引用(当其是一个指针的时候)，或做查询，或其他操作。
+  - 操作系统将线程1挂起。
+  - 其他线程对x执行一些操作，并且将其值改为B。
+  - 另一个线程对A相关的数据进行修改(线程1持有)，让其不再合法。可能会在释放指针指向的内存时，代码产生剧烈的反应(大问题)；或者只是修改了相关值而已(小问题)。
+  - 再来一个线程将x的值改回为A。如果A是一个指针，那么其可能指向一个新的对象，只是与旧对象共享同一个地址而已。
+  - 线程1继续运行，并且对x执行“比较/交换”操作，将A进行对比。这里，“比较/交换”成功(因为其值还是A)，不过这是一个错误的A(the wrong A value)。从第2步中读取的数据不再合法，但是线程1无法言明这个问题，并且之后的操作将会损坏数据结构。2.
+
+4. 识别忙等待循环和帮助其他线程
