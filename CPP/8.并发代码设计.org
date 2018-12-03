@@ -1,0 +1,153 @@
+* 并发代码设计
+
+** 划分工作
+*** 数据划分
+划分方法：
+
+1. 处理前划分
+2. 递归划分（长度固定）
+
+实例：递归划分
+#+BEGIN_SRC C++
+template<typename T>
+struct sorter // 1
+{
+    struct chunk_to_sort
+    {
+        std::list<T> data;
+        std::promise<std::list<T> > promise;
+    };
+    thread_safe_stack<chunk_to_sort> chunks; // 将递归过程的数据块存在栈上
+    std::vector<std::thread> threads; // 线程池
+    unsigned const max_thread_count;
+    std::atomic<bool> end_of_data;    // 标志结束所有线程
+    sorter():
+        max_thread_count(std::thread::hardware_concurrency()-1), // 根据硬件上限决定线程池大小
+        end_of_data(false)
+        {}
+    ~sorter() // 4
+        {
+            end_of_data=true; // 5
+            for(unsigned i=0;i<threads.size();++i)
+            {
+                threads[i].join(); // 等待所有线程结束
+            }
+        }
+    void try_sort_chunk()
+        {
+            boost::shared_ptr<chunk_to_sort > chunk=chunks.pop(); // 取下一个数据块进行排序
+            if(chunk)
+            {
+                sort_chunk(chunk); // 对数据块排序
+            }
+        }
+    std::list<T> do_sort(std::list<T>& chunk_data) // 主线程，划分数据
+        {
+            if(chunk_data.empty())
+            {
+                return chunk_data;
+            }
+            std::list<T> result;
+            result.splice(result.begin(),chunk_data,chunk_data.begin());
+            T const& partition_val=*result.begin();
+            typename std::list<T>::iterator divide_point= // 10
+                std::partition(chunk_data.begin(),chunk_data.end(),
+                               [&](T const& val){return val<partition_val;});
+            chunk_to_sort new_lower_chunk;
+            new_lower_chunk.data.splice(new_lower_chunk.data.end(),
+                                        chunk_data,chunk_data.begin(),
+                                        divide_point);
+            std::future<std::list<T> > new_lower=new_lower_chunk.promise.get_future();
+            chunks.push(std::move(new_lower_chunk)); // 将数据块压栈
+            if(threads.size()<max_thread_count) // 创建线程池
+            {
+                threads.push_back(std::thread(&sorter<T>::sort_thread,this));
+            }
+            std::list<T> new_higher(do_sort(chunk_data)); // 递归划分
+            result.splice(result.end(),new_higher);
+            while(new_lower.wait_for(std::chrono::seconds(0)) !=
+                  std::future_status::ready) // 是否有就绪线程
+            {
+                try_sort_chunk(); // 尝试取出一个数据块进行排序
+            }
+            result.splice(result.begin(),new_lower.get());
+            return result;
+        }
+    void sort_chunk(boost::shared_ptr<chunk_to_sort> const& chunk)
+        {
+            chunk->promise.set_value(do_sort(chunk->data)); // 15
+        }
+    void sort_thread()
+        {
+            while(!end_of_data) // 线程函数终止条件
+            {
+                try_sort_chunk(); // 17
+                std::this_thread::yield(); // 将 CPU 时间片让渡给其它线程，类似 sleep_for
+            }
+        }
+};
+template<typename T>
+std::list<T> parallel_quick_sort(std::list<T> input) // 19
+{
+    if(input.empty())
+    {
+        return input;
+    }
+    sorter<T> s;
+    return s.do_sort(input); // 20
+}
+#+END_SRC
+*** 任务类型划分
+1. 分离关注
+2. 划分任务序列：相同操作序列处理独立的数据项可以使用流水线并发
+** 影响因素
+1. 处理器个数： =std::thread::hardware_concurrency()= 慎用，会导致超额线程。  =std::async()= 或使用线程池可以避免。
+2. 数据争用与乒乓缓存: 数据在每个缓存中传递若干次称为乒乓缓存。减少两个线程对同一个内存位置的竞争。
+3. 伪共享：线程访问 0 号数据项并更新时，缓存行的所有权就需要转移给执行该线程的处理器，这仅是为了让更新1号数据项的线程获取1号线程的所有权。
+缓存行是共享的(即使没有数据存在), 这种方式叫做伪共享。
+解决方法是对数据进行构造，让同一线程访问的数据项存在临近的内存中（就像是放在同一缓存行中）。
+4. 数据紧凑
+5. 超额认购和频繁的任务切换
+** 为性能设计数据结构
+   需要考虑竞争、伪共享和数据距离。
+*** 为复杂操作划分数组元素
+    实例：矩阵乘法，将大矩阵划分为小块或正方形的块。
+*** 其他数据结构中的数据访问模式
+- 尝试调整数据在线程间的分布，就能主同一线程中的数据紧密联系在一起
+- 尝试减少线程上所需的数据量
+- 尝试让不同线程访问不同的存储位置避免伪共享
+
+一种测试伪共享问题的方法是：对大量的数据填充数据，让不同线程并发的进行访问。
+
+#+BEGIN_SRC C++
+struct protected_data
+{
+    std::mutex m;
+    char padding[65536]; // 65536字节已经超过一个缓存行的数量级
+    my_data data_to_protect;
+};
+#+END_SRC
+用来测试互斥量竞争， 或者用：
+
+#+BEGIN_SRC C++
+struct my_data
+{
+    data_item1 d1;
+    data_item2 d2;
+    char padding[65536];
+};
+my_data some_array[256];
+#+END_SRC
+用来测试数组数据中的伪共享
+** 注意事项
+- 并行算法中的异常安全：
+
+在并行算法中不允许异常传播，因为这将会使调用堆栈出现问题。如果一个函数在创建一个新的线程后带着异常退出，那么这个应用将会终止。
+
+- 可扩展性和 Amdahl 定律：
+
+扩展性代表了应用利用系统中处理器执行任务的能力。
+
+- 使用多线程隐藏延迟
+
+- 使用并发提高响应能力
