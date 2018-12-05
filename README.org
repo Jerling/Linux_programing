@@ -8,6 +8,8 @@
 
 ** 系统编程
 
+[[file:system/系统编程.org][1. Linux系统编程]]
+
 ** shell 编程
 [[file:shell/1.linux下编程基础入门.org][1.linux下编程基础入门]]
 
