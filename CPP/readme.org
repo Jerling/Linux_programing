@@ -19,3 +19,5 @@
 
 * C++ 标准库
 [[file:expr.org][表达式]]
+
+[[file:declarations.org][声明]]

@@ -1,0 +1,329 @@
+* 声明
+**  语言链接
+   提供不同程序语言的模块之间的链接
+#+BEGIN_SRC C++
+extern "C++" // 默认
+extern "C"   // 令链接以 C 程序语言书写的函数可行，并在 C++ 程序中定义能从 C 模块调用的函数。
+
+// example:
+extern "C" {
+    int open(const char *pathname, int flags); // C 函数声明
+}
+
+int main()
+{
+    int fd = open("test.txt", 0); // 从 C++ 程序调用 C 函数
+}
+
+// 此 C++ 函数能从 C 代码调用
+extern "C" void handler(int) {
+    std::cout << "Callback invoked\n"; // 它能使用 C++
+}
+#+END_SRC
+*** "C" 链接的特殊规则
+- 有类成员声明时，则保留 "C++"
+- 两个同一无限定名称的函数在不同的命名空间表示同一函数。变量也是一样
+- 变量和函数名不能相同，不管是否在不同命名空间
+*** 注意
+- 只能出现在命名空间作用域
+- 花括号不建立作用域
+- 加与加花括号是有区别的：
+#+BEGIN_SRC C++
+extern "C" int x; // 声明且非定义
+// 上一行等价于 extern "C" { extern int x; }
+
+extern "C" { int x; } // 声明及定义
+#+END_SRC
+** 属性指定符序列（C++11）
+   为类型、对象、代码等引入实现定义的属性。功能如同 =__attribute__((...))= .
+#+begin_quote
+[[attribute-list]]                           C++11
+[[using attribute-namespace:attribute-list]] C++17
+#+end_quote
+
+*** 属性类型
+- 简单： =[[noreturn]]=
+- 命名空间的属性： =[[gnu::unused]]=
+- 有参数的属性： =[[deprecated("because")]]=
+
+*** 标准属性
+https://zh.cppreference.com/w/cpp/language/attributes
+
+*** 示例
+#+BEGIN_SRC C++
+[[gnu::always_inline]] [[gnu::hot]] [[gnu::const]] [[nodiscard]]
+inline int f(); // 声明 f 带四个属性
+
+[[gnu::always_inline, gnu::const, gnu::hot, nodiscard]]
+int f(); // 同上，但用单个含有四个属性的属性指定符
+
+// C++17:
+[[using gnu : const, always_inline, hot]] [[nodiscard]]
+int f[[gnu::always_inline]](); // 属性可出现于多个指定符中
+
+int f() { return 0; }
+
+int main() {}
+#+END_SRC
+
+** 汇编声明
+asm-declaration 给予在 C++ 程序中嵌入汇编语言源代码的能力。此声明是条件性支持及实现定义的，
+表示它可以不存在，而且即使为实现所提供，它也不拥有固定含义。
+
+#+BEGIN_SRC C++
+#include <iostream>
+
+extern "C" int func();
+// func 的定义以汇编语言书写
+// 未处理字符串字面量可以很有用
+asm(R"(
+.globl func
+    .type func, @function
+    func:
+    .cfi_startproc
+    movl $7, %eax
+    ret
+    .cfi_endproc
+)");
+
+int main()
+{
+    int n = func();
+    // 扩展内联汇编
+    asm ("leal (%0,%0,4),%0"
+         : "=r" (n)
+         : "0" (n));
+    std::cout << "7*5 = " << n << std::endl; // 冲入是有意的
+
+    // 标准内联汇编
+    asm ("movq $60, %rax\n\t" // Linux 上的退出 syscall 号
+         "movq $2,  %rdi\n\t" // 此程序返回 2
+         "syscall");
+}
+#+END_SRC
+
+** 类型别名
+功能和 =typedef= 一样
+#+BEGIN_SRC C++
+#include <string>
+#include <ios>
+#include <type_traits>
+
+// 类型别名，等同于
+// typedef std::ios_base::fmtflags flags;
+using flags = std::ios_base::fmtflags;
+// 名称 'flags' 现在指代类型：
+flags fl = std::ios_base::dec;
+
+// 类型别名，等同于
+// typedef void (*func)(int, int);
+using func = void (*) (int, int);
+// 名称 'func' 现在指代指向函数的指针：
+void example(int, int) {}
+func f = example;
+
+// 别名模板
+template<class T>
+using ptr = T*;
+// 名称 'ptr<T>' 现在是指向 T 指针的别名
+ptr<int> x;
+
+// 用于隐藏模板形参的别名模版
+template<class CharT>
+using mystring = std::basic_string<CharT, std::char_traits<CharT>>;
+mystring<char> str;
+
+// 能引入成员 typedef 名的别名模版
+template<typename T>
+struct Container { using value_type = T; };
+// 可用于泛型编程
+template<typename Container>
+void g(const Container& c) { typename Container::value_type n; }
+
+// 用于简化 std::enable_if 语法的类型别名
+template<typename T>
+using Invoke = typename T::type;
+template<typename Condition>
+using EnableIf = Invoke<std::enable_if<Condition::value>>;
+template<typename T, typename = EnableIf<std::is_polymorphic<T>>>
+int fpoly_only(T t) { return 1; }
+
+struct S { virtual ~S() {} };
+
+int main()
+{
+    Container<int> c;
+    g(c); // Container::value_type 将在此函数为 int
+//  fpoly_only(c); // 错误： enable_if 禁止它
+    S s;
+    fpoly_only(s); // OK ： enable_if 允许它
+}
+#+END_SRC
+
+** 命名空间别名
+#+BEGIN_SRC C++
+#include <iostream>
+
+namespace foo {
+    namespace bar {
+         namespace baz {
+             int qux = 42;
+         }
+    }
+}
+
+namespace fbz = foo::bar::baz;
+
+int main()
+{
+    std::cout << fbz::qux << '\n';
+}
+#+END_SRC
+
+** using 声明
+   引入定义于别处的名称到此 using 声明所出现的声明性区域。
+
+在继承体系中比较常用，用于暴露基类受保护的成员为派生类的公开成员，或者继承构造函数。
+#+BEGIN_SRC C++
+#include <iostream>
+struct B {
+    B(){};
+    virtual void f(int) { std::cout << "B::f\n"; }
+    void g(char)        { std::cout << "B::g\n"; }
+    void h(int)         { std::cout << "B::h\n"; }
+ protected:
+    int m; // B::m 为受保护
+    typedef int value_type;
+};
+
+struct D : B {
+    using B::B; // 继承构造函数
+    using B::m; // D::m 为公开
+    using B::value_type; // D::value_type 为公开
+
+    using B::f;
+    void f(int) { std::cout << "D::f\n"; } // D::f(int) 覆写 B::f(int)
+    using B::g;
+    void g(int) { std::cout << "D::g\n"; } // g(int) 与 g(char) 均作为 D 成员可见
+    using B::h;
+    void h(int) { std::cout << "D::h\n"; } // D::h(int) 隐藏 B::h(int)
+};
+
+int main()
+{
+    D d;
+    B& b = d;
+
+//    b.m = 2; // 错误， B::m 受保护
+    d.m = 1; // 受保护的 B::m 可作为公开的 D::m 访问
+    b.f(1); // 调用派生类 f()
+    d.f(1); // 调用派生类 f()
+    d.g(1); // 调用派生类 g(int)
+    d.g('a'); // 调用基类 g(char)
+    b.h(1); // 调用基类 h()
+    d.h(1); // 调用派生类 h()
+}
+#+END_SRC
+
+*** 注意
+- 必须显式提及于 using 声明的名称
+- 不能指代命名空间、有作用域枚举项、基类析构函数域用于定义转换函数的成员模板特化
+#+BEGIN_SRC C++
+struct B { template<class T> void f(); };
+struct D : B {
+      using B::f;      // OK ：指名模板
+//    using B::f<int>; // 错误：指名模板特化
+      void g() { f<int>(); }
+};
+#+END_SRC
+- 无法用于将依赖成员模板的名称为模板名引入
+#+BEGIN_SRC C++
+template<class X> struct B { template<class T> void f(T); };
+template<class Y> struct D : B<Y> {
+//  using B<Y>::template f; // 错误：不允许消歧义符
+  using B<Y>::f;            // 能编译，但 f 不是模板名
+  void g() {
+//    f<int>(0);            // 错误：已知 f 不是目标名，
+                            // 故 < 不开始模板实参列表
+      f(0);                 // OK
+  }
+};
+#+END_SRC
+
+** 枚举声明
+
+*** 无作用域
+- =enum [name[:type]] {enumerator, ...}= ：[]表示可省略
+#+BEGIN_SRC C++
+enum Color { red, green, blue };
+Color r = red;
+switch(r)
+{
+    case red  : std::cout << "red\n";   break;
+    case green: std::cout << "green\n"; break;
+    case blue : std::cout << "blue\n";  break;
+}
+
+enum { a, b, c = 0, d = a + 2 }; // 定义 a = 0, b = 1, c = 0, d = 2
+#+END_SRC
+- 当无作用域枚举是类成员时，其枚举项可用类成员访问运算符 . 和 -> 访问：
+#+BEGIN_SRC C++
+struct X
+{
+    enum direction { left = 'l', right = 'r' };
+};
+X x;
+X* p = &x;
+
+int a = X::direction::left; // 仅于 C++11 及之后允许
+int b = X::left;
+int c = x.left;
+int d = p->left;
+#+END_SRC
+
+*** 有作用域
+- =enum struct|class name : type { enumerator = constexpr , enumerator = constexpr , ... }=
+#+BEGIN_SRC C++
+enum class Color { red, green = 20, blue };
+Color r = Color::blue;
+switch(r)
+{
+    case Color::red  : std::cout << "red\n";   break;
+    case Color::green: std::cout << "green\n"; break;
+    case Color::blue : std::cout << "blue\n";  break;
+}
+// int n = r; // 错误：无有作用域枚举到 int 的转换
+int n = static_cast<int>(r); // OK, n = 21
+#+END_SRC
+
+** 总结
+#+BEGIN_SRC C++
+class C {
+    std::string member; // decl-specifier-seq 为 "std::string"
+                        // declarator 为 "member"
+} obj, *pObj(&obj);
+// decl-specifier-seq 为 "class C { std::string member; }"
+// 声明器 "obj" 定义 C 类型的对象
+// 声明器 "*pObj(&obj)" 声明并初始化指向 C 的指针
+
+int a = 1, *p = NULL, f(), (*pf)(double);
+// decl-specifier-seq 为 int
+// 声明器 a=1 定义并初始化 int 类型变量
+// 声明器 *p=NULL 定义并初始化 int* 类型变量
+// 声明器 (f)() 声明（但不定义）不接收参数并返回 int 的函数
+// 声明器 (*pf)(double) 定义指向接收 double 并返回 int 的函数的指针
+
+int (*(*foo)(double))[3] = NULL;
+// decl-specifier-seq 为 int
+// 1. 声明器 "(*(*foo)(double))[3]" 是数组声明器；
+//    所声明类型是“ /嵌套声明器/ 3 个 int 的数组”
+// 2. 嵌套声明器是 "(*(*foo)(double))" ，它是指针声明器
+//    所声明类型是“ /嵌套声明器/ 指向 3 个 int 的数组的指针”
+// 3. 嵌套声明器是 "(*foo)(double)" ，它是函数声明器
+//    所声明类型是“ /嵌套声明器/ 接收 double 并返回指向 3 个 int 的数组的指针的函数”
+// 4. 嵌套声明器是 "(*foo)" ，它是（带括号，如函数声明器语法所要求的）指针声明器。
+//    所声明类型是“ /嵌套声明器/ 指向接收 double 并返回指向 3 个 int 的数组的指针的函数的指针”
+// 5. 嵌套声明器是 "foo" ，它是标识符。
+// 该声明声明对象 foo ，其类型为“指向接收 double 并返回指向 3 个 int 的数组的指针的函数的指针”
+// 初始化器 "= NULL" 提供此指针的初值。
+#+END_SRC
