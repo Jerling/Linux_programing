@@ -1,0 +1,168 @@
+* 表达式
+**  特殊运算符
+*** typeid
+   查询类型信息, 使用：typeid(type/expr)，返回 std::type_info(<typeinfo>)。
+- 注意
+
+在应用到多态类型的表达式时， typeid 表达式的求值可能引入运行时开销（虚表查找），其他情况下 typeid 表达式都在编译时解决。
+
+typeid 所指代的对象的析构函数在程序结束时是否执行是未指定的。
+
+不保证同一类型上所有 typeid 表达式的求值都指代同一 std::type_info 实例，不过这些 type_info
+对象的 std::type_info::hash_code 会是同一的，其 std::type_index 也相同。
+#+BEGIN_SRC C++
+const std::type_info& ti1 = typeid(A);
+const std::type_info& ti2 = typeid(A);
+
+assert(&ti1 == &ti2); // 不保证
+assert(ti1.hash_code() == ti2.hash_code()); // 保证
+assert(std::type_index(ti1) == std::type_index(ti2)); // 保证
+#+END_SRC
+- 官网例子: https://zh.cppreference.com/w/cpp/language/typeid
+#+BEGIN_SRC C++
+#include <iostream>
+#include <string>
+#include <typeinfo>
+
+struct Base {}; // 非多态
+struct Derived : Base {};
+
+struct Base2 { virtual void foo() {} }; // 多态
+struct Derived2 : Base2 {};
+
+int main() {
+    int myint = 50;
+    std::string mystr = "string";
+    double *mydoubleptr = nullptr;
+
+    std::cout << "myint has type: " << typeid(myint).name() << '\n'
+              << "mystr has type: " << typeid(mystr).name() << '\n'
+              << "mydoubleptr has type: " << typeid(mydoubleptr).name() << '\n';
+
+    // std::cout << myint 为多态类型的泛左值表达式；求值它
+    const std::type_info& r1 = typeid(std::cout << myint);
+    std::cout << '\n' << "std::cout<<myint has type : " << r1.name() << '\n';
+
+    // std::printf() 不是多态类型的泛左值表达式；不求值
+    const std::type_info& r2 = typeid(std::printf("%d\n", myint));
+    std::cout << "printf(\"%d\\n\",myint) has type : " << r2.name() << '\n';
+
+    // 非多态左值为静态类型
+    Derived d1;
+    Base& b1 = d1;
+    std::cout << "reference to non-polymorphic base: " << typeid(b1).name() << '\n';
+
+    Derived2 d2;
+    Base2& b2 = d2;
+    std::cout << "reference to polymorphic base: " << typeid(b2).name() << '\n';
+
+    try {
+        // 解引用空指针：对于非多态表达式 OK
+        std::cout << "mydoubleptr points to " << typeid(*mydoubleptr).name() << '\n';
+        // 解引用空指针：对多态左值不 OK
+        Derived2* bad_ptr = nullptr;
+        std::cout << "bad_ptr points to... ";
+        std::cout << typeid(*bad_ptr).name() << '\n';
+    } catch (const std::bad_typeid& e) {
+         std::cout << " caught " << e.what() << '\n';
+    }
+}
+#+END_SRC
+*** noexcept
+noexcept 运算符进行编译时检查，若表达式声明为不抛出任何异常则返回 true 。
+
+它可用于函数模板的 noexcept 指定符以声明函数将对某些类型抛出异常，但不对其他类型抛出。
+
+- 规则（C++17）
+若 expression 含有至少一个下列潜在求值的构造则结果为 false ：
+
+调用无不抛出异常指定的任意类型函数，除非它是常量表达式。
+throw 表达式。
+目标类型是引用类型，且转换需要运行时检查时的 dynamic_cast 表达式
+参数类型是多态类类型的 typeid 表达式
+所有其他情况下结果是 true 。
+
+(C++17 前)
+若 expression 的潜在异常集合为空则结果为 true ，否则为 false 。
+
+- 官网例子：https://zh.cppreference.com/w/cpp/language/noexcept
+#+BEGIN_SRC C++
+#include <iostream>
+#include <utility>
+#include <vector>
+
+void may_throw();
+void no_throw() noexcept;
+auto lmay_throw = []{};
+auto lno_throw = []() noexcept {};
+class T{
+public:
+  ~T(){} // 析构函数防止移动构造函数
+         // 复制构造函数是 noexcept
+};
+class U{
+public:
+  ~U(){} // 析构函数防止移动构造函数
+         // 复制构造函数是 noexcept(false)
+  std::vector<int> v;
+};
+class V{
+public:
+  std::vector<int> v;
+};
+
+int main()
+{
+ T t;
+ U u;
+ V v;
+
+ std::cout << std::boolalpha
+           << "Is may_throw() noexcept? " << noexcept(may_throw()) << '\n'
+           << "Is no_throw() noexcept? " << noexcept(no_throw()) << '\n'
+           << "Is lmay_throw() noexcept? " << noexcept(lmay_throw()) << '\n'
+           << "Is lno_throw() noexcept? " << noexcept(lno_throw()) << '\n'
+           << "Is ~T() noexcept? " << noexcept(std::declval<T>().~T()) << '\n'
+           // note: the following tests also require that ~T() is noexcept because
+           // the expression within noexcept constructs and destroys a temporary
+           << "Is T(rvalue T) noexcept? " << noexcept(T(std::declval<T>())) << '\n'
+           << "Is T(lvalue T) noexcept? " << noexcept(T(t)) << '\n'
+           << "Is U(rvalue U) noexcept? " << noexcept(U(std::declval<U>())) << '\n'
+           << "Is U(lvalue U) noexcept? " << noexcept(U(u)) << '\n'
+           << "Is V(rvalue V) noexcept? " << noexcept(V(std::declval<V>())) << '\n'
+           << "Is V(lvalue V) noexcept? " << noexcept(V(v)) << '\n';
+}
+#+END_SRC
+*** alignof
+查询类型的对齐要求。返回 =std::size_t= 。
+
+返回由类型标识所指示的类型的任何实例所要求的对齐字节数，该类型可以为完整类型、数组类型或者引用类型。
+
+若类型为引用类型，则运算符返回被引用类型的对齐；若类型为数组类型，则返回元素类型的对齐要求。
+
+- 例子：https://zh.cppreference.com/w/cpp/language/alignof
+#+BEGIN_SRC C++
+#include <iostream>
+
+struct Foo {
+    int   i;
+    float f;
+    char  c;
+};
+
+struct Empty {};
+
+struct alignas(64) Empty64 {};
+
+int main()
+{
+    std::cout << "Alignment of"  "\n"
+        "- char             : " << alignof(char)    << "\n"
+        "- pointer          : " << alignof(int*)    << "\n"
+        "- class Foo        : " << alignof(Foo)     << "\n"
+        "- empty class      : " << alignof(Empty)   << "\n"
+        "- alignas(64) Empty: " << alignof(Empty64) << "\n";
+}
+#+END_SRC
+
+- alignas : 设置字节对齐
