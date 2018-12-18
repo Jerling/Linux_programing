@@ -6,6 +6,9 @@
 
 [[https://github.com/huihut/interview][2. C/C++面试知识总结]]
 
+** 数据库
+[[file:db/readme.org][1. 数据库系统实现阅读笔记]]
+
 ** 系统编程
 
 [[file:system/系统编程.org][1. Linux系统编程]]
