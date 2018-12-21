@@ -3,3 +3,5 @@
 [[file:ch01.org][第一章、DBMS系统概述]]
 
 [[file:ch02.org][第二章、辅助存储管理]]
+
+[[file:ch03.org][第三章、索引结构]]
