@@ -76,3 +76,6 @@
 [[file:tcp_ip/icmp.org][TCP/IP详解卷1: 第六章(ICMP)]]
 
 [[file:tcp_ip/ip_选路.org][TCP/IP详解卷1: 第九章(IP选路)]]
+
+** Linux内核
+[[file:Linux/readme.org][深入Linux内核架构]]
