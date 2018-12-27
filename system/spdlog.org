@@ -1,0 +1,66 @@
+* spdlog 日志库
+  spdlog 是一个只有头文件的快速的C++11日志库，输出格式使用 [[https://github.com/fmtlib/fmt][fmt]] 库，实现类似 python 的输出：
+#+BEGIN_SRC C++
+logger->info("Hello {} {} !!", "param1", 123.4);
+#+END_SRC
+
+** 例子
+   通过一些例子来了解库的基本使用方法。
+
+*** Basic example
+#+BEGIN_SRC C++
+#include <iostream>
+#include "spdlog/spdlog.h"
+// #include "spdlog/sinks/stdout_color_sinks.h" //support for stdout logging
+// #include "spdlog/sinks/basic_file_sink.h" // support for basic file logging
+// #include "spdlog/sinks/rotating_file_sink.h" // support for rotating file logging
+
+int main(int, char* [])
+{
+    //Multithreaded console logger(with color support)
+    auto console = spdlog::stdout_color_mt("console");
+    console->info("Welcome to spdlog!") ;
+    console->info("An info message example {}..", 1);
+
+    try
+    {
+        // Create basic file logger (not rotated)
+        auto my_logger = spdlog::basic_logger_mt("basic_logger", "logs/basic.txt");
+
+        // create a file rotating logger with 5mb size max and 3 rotated files
+        auto file_logger = spdlog::rotating_logger_mt("file_logger", "myfilename", 1024 * 1024 * 5, 3);
+    }
+    catch (const spdlog::spdlog_ex& ex)
+    {
+        std::cout << "Log initialization failed: " << ex.what() << std::endl;
+    }
+}
+#+END_SRC
+深度跟踪例子的调用路线：
+#+BEGIN_COMMENT
+
+#+BEGIN_SRC plantuml :file images/basic_example.png
+:Main;
+:spdlog::stdout_color_mt(string);
+:ansicolor_stdout_sink<mutex>;
+:ansicolor_sink<mutex>;
+:base_sink;
+:sink;
+:register::instance();
+:register_t::create();
+:logger::info();
+:log(level, msg);
+if (Exception ?) then (yes)
+ :ex.what();
+else (no)
+ :basic_logger_mt();
+ :rotating_logger_mt();
+endif
+:Finish;
+#+END_SRC
+
+#+RESULTS:
+#+END_COMMENT
+
+
+[[file:images/basic_example.png]]

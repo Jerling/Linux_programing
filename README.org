@@ -79,3 +79,6 @@
 
 ** Linux内核
 [[file:Linux/readme.org][深入Linux内核架构]]
+
+** 日志处理
+[[file:system/spdlog.org][spdlog 日志库]]
