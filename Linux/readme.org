@@ -1,3 +1,5 @@
 * Linux 内核相关
 ** 深入Linux内核架构
 [[file:deep_ch01.org][第一章 简介和概述]]
+
+[[file:deep_ch02.org][第二章 进程的管理和调度]]
