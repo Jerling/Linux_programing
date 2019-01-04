@@ -362,7 +362,7 @@ struct pid
 };
 #+END_SRC
 
-[[file:img/nipaste_2018-12-30_15-06-56.png]]
+[[file:img/Snipaste_2018-12-30_15-06-56.png]]
 
 所有共享同一ID的task_struct实例都按进程存储在一个散列表中：
 #+BEGIN_SRC C
