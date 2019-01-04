@@ -1,0 +1,27 @@
+* shell 编程基础
+
+[[file:1.linux下编程基础入门.org][1.linux下编程基础入门
+]]
+[[file:变量及LAMP导航菜单.org][2.变量及LAMP导航菜单]]
+
+[[file:if条件语句.org][3.if条件语句]]
+
+[[file:编写MySQL备份脚本.org][4.MySQL备份脚本]]
+
+[[file:LAMP安装脚本.org][5.LAMP安装脚本]]
+
+[[file:for语句.org][6.for语句]]
+
+[[file:while语句.org][7.while语句]]
+
+[[file:until语句.org][8.until语句]]
+
+[[file:函数.org][9.函数使用]]
+
+[[file:awk_sed_命令.org][10.awk_sed_命令]]
+
+[[file:linux增量备份.org][11.linux增量备份]]
+
+[[file:linux自动化.org][12.Linux自动化]]
+
+视频地址：https://www.bilibili.com/video/av8104450/?p=1

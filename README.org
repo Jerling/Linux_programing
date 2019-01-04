@@ -14,68 +14,12 @@
 [[file:system/系统编程.org][1. Linux系统编程]]
 
 ** shell 编程
-[[file:shell/1.linux下编程基础入门.org][1.linux下编程基础入门]]
-
-[[file:shell/变量及LAMP导航菜单.org][2.变量及LAMP导航菜单]]
-
-[[file:shell/if条件语句.org][3.if条件语句]]
-
-[[file:shell/编写MySQL备份脚本.org][4.MySQL备份脚本]]
-
-[[file:shell/LAMP安装脚本.org][5.LAMP安装脚本]]
-
-[[file:shell/for语句.org][6.for语句]]
-
-[[file:shell/while语句.org][7.while语句]]
-
-[[file:shell/until语句.org][8.until语句]]
-
-[[file:shell/函数.org][9.函数使用]]
-
-[[file:shell/awk_sed_命令.org][10.awk_sed_命令]]
-
-[[file:shell/linux增量备份.org][11.linux增量备份]]
-
-[[file:shell/linux自动化.org][12.Linux自动化]]
-
-视频地址：https://www.bilibili.com/video/av8104450/?p=1
+   [[file:shell/readme.org][1. shell编程基础]]
 
 ** 网络编程
-[[file:notes/Ch01.org][UNP卷1：第一章（简介）]]
-
-[[file:notes/Ch03.org][UNP卷1：第三章（套接字编程简介)]]
-
-[[file:notes/Ch04.org][UNP卷1：第四章（基本TCP套接字编程）]]
-
-[[file:notes/Ch05.org][UNP卷1：第五章（TCP客户/服务器程序示例）]]
-
-[[file:notes/Ch06.org][UDP卷1：第六章（I/O复用：select和poll函数）]]
-
-[[file:notes/Ch08.org][UNP卷1：第八章（基本UDP套接字编程）]]
-
-[[file:notes/Ch09.org][UNP卷1：第九章(基本SCTP套接字编程)]]
-
-[[file:notes/Ch11.org][UNP卷1：第十一章（名字与地址转换）]]
-
-[[file:notes/Ch13.org][UNP卷1：第十三章（守护进程和inetd超级服务器）]]
-
-[[file:notes/Ch14.org][UNP卷1：第十四章（高级I/O函数）]]
-
-[[file:notes/Ch15.org][UNP卷1：第十五章（unix域协议）]]
-
-[[file:notes/Ch20.org][UNP卷1：第二十章（广播）]]
-
-转自：[[https://www.kancloud.cn/digest/unix-fzyz-sb/168123][https://www.kancloud.cn/digest/unix-fzyz-sb/168123]]
-
-** TCP/IP详解卷1
-
-[[file:tcp_ip/Ch03.org][TCP/IP详解卷1：第三章(IP: 网际协议)]]
-
-[[file:tcp_ip/Ch04.org][TCP/IP详解卷1：第四章(ARP 协议)]]
-
-[[file:tcp_ip/icmp.org][TCP/IP详解卷1: 第六章(ICMP)]]
-
-[[file:tcp_ip/ip_选路.org][TCP/IP详解卷1: 第九章(IP选路)]]
+   [[file:myunp/readme.org][1. UNP 卷一 学习笔记]]
+** TCP/IP 协议栈
+   [[file:tcp_ip/readme.org][1. TCP/IP详解卷一]]
 
 ** Linux内核
 [[file:Linux/readme.org][深入Linux内核架构]]
