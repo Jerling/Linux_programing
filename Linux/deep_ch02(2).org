@@ -1,0 +1,950 @@
+* 进程管理和调度(2)
+** 进程管理的系统调用
+*** 进程复制
+- fork: 重量级调用，父进程的完整副本。使用写进复制(COW)技术减少工作量
+- vfork: 不创建数据副本，而是共享数据(省时间)。一般用于子进程形成后立即执行 execve 系统调用将独立进程合并成进程组
+加载新程序的情形。在子进程退出或开始前，父进程阻塞。避免使用，因为 fork 的COW 技术和其速度差不多
+- clone: 产生线程，对父子进程之间的共享、复制进行精确控制
+**** 写时复制
+原始 fork 调用的缺点：
+
+- 占用大量内存
+- 复制耗时长
+- 如果复制之后使用 exec 调用，缺点更明显，之前的复制将是多余的，因为进程地址空间会重新初始化
+
+COW:
+
+- 只复制页表，父子进程的物理页是一样的，并且设置为只读
+- 其中一个进程要修改，内核判断为 COW 页后会创建副本，然后才能修改
+**** 执行系统调用
+系统调用入口点：
+
+fork : sys_fork
+vfork : sys_vfork
+clone : sys_clone
+
+系统调用从处理器寄存器中提取由用户空间提供的信息，然后调用与体系结构无关的 do_fork 函数负责进程复制。
+**** do_fork 的实现
+[[file:img/Snipaste_2019-01-04_16-14-36.png]]
+
+子进程生成之后：
+- 如果设置了 CLONE_NEWPID 标志，则创建了新的PID命名空间，需要调用 task_pid_nr_ns 获取在父命名
+空间中为新进程选择的PID。否则直接调用 task_pid_vnr 获取局部 PID 即可。这里统一封装在 pid_vnr 中。
+- 如果使用 ptrace 监控新进程，则在创建新的进程后会立即发送 SIGSTOP 信号，以便附接的调试器检查其数据。
+- 子进程通过 wake_up_new_task 唤醒：将其 task_struct 添加到调度队列。调度器对新进程特殊处理
+以便尽可能快地开始运行，同时也可以防止一再地调用fork 浪费CPU时间。
+- 如果使用 vfork 机制，必须启用子进程的完成机制。借助于 wait_for_completion 函数，在此期间
+父进程进入睡眠，直到子进程退出。进程终止(或execve启动新程序)时，内核调用 complete（vfork_done）
+。从而唤醒所有因该变量睡眠的进程。
+
+#+BEGIN_SRC C
+// arch/h8300/kernel/process.c
+/* generic sys_clone is not enough registers */
+/* sys_fork 和 sys_vfork 可能改用 汇编实现了，没找到定义，但也调用与体系结构无关的 do_fork
+asmlinkage int sys_clone(unsigned long __user *args)
+{
+	unsigned long clone_flags;
+	unsigned long  newsp;
+	uintptr_t parent_tidptr;
+	uintptr_t child_tidptr;
+
+	get_user(clone_flags, &args[0]);
+	get_user(newsp, &args[1]);
+	get_user(parent_tidptr, &args[2]);
+	get_user(child_tidptr, &args[3]);
+	return do_fork(clone_flags, newsp, 0,
+		       (int __user *)parent_tidptr, (int __user *)child_tidptr);
+}
+
+// kernel/fork.c
+long do_fork(unsigned long clone_flags,
+	      unsigned long stack_start,
+	      unsigned long stack_size,
+	      int __user *parent_tidptr,
+	      int __user *child_tidptr)
+{
+	return _do_fork(clone_flags, stack_start, stack_size,
+			parent_tidptr, child_tidptr, 0);
+}
+
+long _do_fork(unsigned long clone_flags,   // 标志集合：指定控制复制过程的一些属性
+	      unsigned long stack_start,       // 用户状态下栈的起始地址
+	      unsigned long stack_size,        // 栈大小
+	      int __user *parent_tidptr,       // TID 指针
+	      int __user *child_tidptr,
+	      unsigned long tls)               // 线程局部存储
+{
+	struct completion vfork;
+	struct pid *pid;
+	struct task_struct *p;
+	int trace = 0;          // 跟踪event
+	long nr;
+
+	/*
+	 * Determine whether and which event to report to ptracer.  When
+	 * called from kernel_thread or CLONE_UNTRACED is explicitly
+	 * requested, no event is reported; otherwise, report if the event
+	 * for the type of forking is enabled.
+     * 决定报告哪个事件给 ptracer，当调用内核线程或声明 CLONE_UNTRACED 是不报告
+	 */
+	if (!(clone_flags & CLONE_UNTRACED)) {
+		if (clone_flags & CLONE_VFORK)
+			trace = PTRACE_EVENT_VFORK;
+		else if ((clone_flags & CSIGNAL) != SIGCHLD)
+			trace = PTRACE_EVENT_CLONE;
+		else
+			trace = PTRACE_EVENT_FORK;
+
+		if (likely(!ptrace_event_enabled(current, trace)))
+			trace = 0;
+	}
+
+    /* 拷贝进程: 这里会将子进程的寄存器栈中的 eax 赋值为 0，从而实现返回与父进程不同的值 */
+	p = copy_process(clone_flags, stack_start, stack_size,
+			 child_tidptr, NULL, trace, tls, NUMA_NO_NODE);
+    /* 将一个随机数混到内核熵池中：解决内核启动后熵太小问题--用于生成密钥 */
+	add_latent_entropy();
+
+	if (IS_ERR(p))
+		return PTR_ERR(p);
+
+	/*
+	 * Do this prior waking up the new thread - the thread pointer
+	 * might get invalid after that point, if the thread exits quickly.
+     * 唤醒新线程前的工作
+	 */
+	trace_sched_process_fork(current, p);
+
+	pid = get_task_pid(p, PIDTYPE_PID);
+	nr = pid_vnr(pid);
+
+	if (clone_flags & CLONE_PARENT_SETTID)
+		put_user(nr, parent_tidptr);
+
+	if (clone_flags & CLONE_VFORK) {
+		p->vfork_done = &vfork;
+		init_completion(&vfork);
+		get_task_struct(p);
+	}
+
+    /* 唤醒新线程 */
+	wake_up_new_task(p);
+
+	/* forking complete and child started to run, tell ptracer */
+	if (unlikely(trace))
+		ptrace_event_pid(trace, pid);
+
+	if (clone_flags & CLONE_VFORK) {
+		if (!wait_for_vfork_done(p, &vfork))  // 等待 vfork 后的子进程退出
+			ptrace_event_pid(PTRACE_EVENT_VFORK_DONE, pid);
+	}
+
+	put_pid(pid);
+	return nr;
+}
+#+END_SRC
+**** 复制进程
+     do_fork 中大多数的工作是由 copy_process 完成的
+
+[[file:img/Snipaste_2019-01-04_16-55-54.png]]
+
+- 错误处理：重用0-4K的虚存区域编码错误码，返回的指针指向该区域则出错，使用 ERR_PTR 将数值
+常数编码为指针。
+- 检查标志：
+  - CLONE_THREAD ：必须用 CLONE_SIGHAND 激活信号共享，因为一个信号无法发送到线程组中和各个线程
+  - CLONE_VM : 只有在父子之间共享地址空间时，才能共享信号处理程序
+- dup_task_struct : 父子进程 task_struct 实例只有一个成员不同：新进程分配了一个新的核心态栈(task_struct->stack),
+栈通常与thread_info一同保存一个联合中，thread_info保存了线程所需要的特定于处理器的底层信息。
+但4.20 的源码中发现是分开的。
+
+- thread_info 保存了特定于体系结构的汇编语言代码需要访问的那部分进程数据。
+#+BEGIN_SRC C
+// arch/arc/include/asm/thread_info.h
+struct thread_info {
+	unsigned long flags;		/* low level flags  底层标志*/
+	int preempt_count;		/* 0 => preemptable 可抢占, <0 => BUG */
+	struct task_struct *task;	/* main task structure */
+	mm_segment_t addr_limit;	/* thread address space */
+	__u32 cpu;			/* current CPU */
+	unsigned long thr_ptr;		/* TLS ptr 线程局部数据指针*/
+};
+#+END_SRC
+
+- current_thread_info : 指向当前执行进程的 thread_info 实例的指针
+- current : 当前进程task_struct实例的地址
+- 资源限制：是不超出最大进程数目,通过 user_struct的processes成员访问当前的进程数。超过则
+检测是否为root用户或有特别的权限。
+#+BEGIN_SRC C
+// kernel/fork.c
+static __latent_entropy struct task_struct *copy_process(
+...
+	if (atomic_read(&p->real_cred->user->processes) >=
+			task_rlimit(p, RLIMIT_NPROC)) {
+		if (p->real_cred->user != INIT_USER &&
+		    !capable(CAP_SYS_RESOURCE) && !capable(CAP_SYS_ADMIN))
+			goto bad_fork_free;
+	}
+...
+)
+#+END_SRC
+- 调度新进程： sched_fork，使调度器有机会对新进程进行设置。自引入CFQ调度器之后，该过程变得
+简单了，之前需要将父进程剩余时间片分配给父子进程，现在不需要时间片。主要是初始化一些统计
+字段，在多处理器上，可能会重新均衡CPU之间的可用进程。进程状态为 TASK_RUNNING，虽然进程还
+没运行，但可以防止内核的其它部分试图将进程的状态改为运行，并在进程的设置彻底完成前调度进程。
+
+- 复制进程所有信息： 复制或共享特定的内核子系统的资源。其中 copy_thread是一个特定于体系结构
+的函数用于复制进程中特定线程的数据，是 thread_struct 的对象，包含所有寄存器和其它信息，这也
+是实现在父子进程返回不同值的黑魔法的关键函数。
+
+[[file:img/Snipaste_2019-01-04_22-53-34.png]]
+**** 创建线程进的特别问题
+     用户空间线程库使用 clone系统调用来生成新线程。
+
+sys_futex: 快速的用户空间互斥量，用于唤醒等待线程结束事件的进程。
+*** 内核线程
+    是由内核直接启动的进程。实际上是将内核函数委托给独立的进程，与系统中其它进程
+“并行”执行。经常称之为（内核）守护进程。
+- 周期性地将修改的内存页与页来源块设备同步(mmap文件映射)
+- 将较少使用的内存页写入swap区
+- 管理延时动作
+- 文件系统事务日志
+
+分类：
+1. 线程启动后一直等待直到内核请求报告某五特定操作
+2. 启动后周期性的间隔运行，检测特定资源的使用。用于连续监测任务
+
+启动函数:
+#+BEGIN_SRC C
+/arch/csky/include/asm/processor.h
+extern int kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
+#+END_SRC
+- fn : 线程执行函数
+- arg : 传递给 fn 的参数
+- flags : 标志，如CLONE
+
+kernel_thread的第一个任务是构建一个 pt_regs实例，对特定体系结构的寄存器指定适当的值，
+然后调用 do_fork 函数。
+
+注意：
+- 只在CPU的管态执行，不在用户态
+- 只可以访问虚拟地址的内核部分(>TASK_SIZE)
+**** 内存描述符
+#+BEGIN_SRC C
+struct task_struct{
+...
+	struct mm_struct		*mm;
+	struct mm_struct		*active_mm;
+...
+}
+#+END_SRC
+- 当用户态切换到内核态(如系统调用)时，用户空间部分mm指向的 mm_struct 实例描述。
+- 内核线程不能访问用户空间，所以 mm 设置为空指针
+- 由于内核必须知道用户空间包含了什么，所以 active_mm 中保存了指向的实例来描述
+- 惰性TLB进程：内核线程前后的进程相同，则不需要修改用户空间地址与表，地址转换
+后备缓冲器(TLB)的信息依然有效。否则需要切换并清除TLB数据
+- 内核在进程上下文运行时，mm和active_mm相同
+**** 实现
+***** 老方法
+      使用 kernel_thread 函数 ：
+- 从内核线程释放其父进程(用户进程)所有的资源
+- daemonize 阻塞信号的接收
+- 将 init 用作守护进程的父进程
+***** 新方法
+      使用辅助函数 kthread_create*
+#+BEGIN_SRC C
+// kernel/kthread.c
+struct task_struct *kthread_create_on_node(int (*threadfn)(void *data),
+					   void *data,
+					   int node,
+					   const char namefmt[], ...);
+
+// 绑定到特定的 CPU
+struct task_struct *kthread_create_on_cpu(int (*threadfn)(void *data),
+					   void *data,
+					   int node,
+					   const char namefmt[], ...);
+#+END_SRC
+创建一个名为 namefmt 的线程，创建完是停止的，需要调用 wake_up_process 启动。此后会
+调用以 data 为参数的 threadfn 函数。
+
+也可以使用 kthread_run 将前面两步合在一起，创建完马上运行。
+*** 启动新程序
+    即用新的代码替换现存的程序。Linux提供的 execve 系统调用可用于此目的。
+**** execve 的实现
+       和 fork 系列函数一样，execve 也有对应的体系结构相关的入口函数 sys_execve 函数,以及无关的
+do_execve 例程。
+#+BEGIN_SRC C
+// fs/exec.c
+int do_execve(struct filename *filename,
+	const char __user *const __user *__argv,
+	const char __user *const __user *__envp)
+#+END_SRC
+[[file:img/Snipaste_2019-01-06_17-35-04.png]]
+
+search_binary_handler 用于在 do_execve 结束时查找一种适当的二进制格式，用于所要执行的特定文件。二进制格式处理程序
+负责将新程序的数据加载到旧的地址空间中。
+
+- 释放原进程使用的所有资源
+- 将应用程序映射到虚拟地址空间中
+  - text 段包含程序的可执行代码。 start_code 和 end_code 为边界
+  - 预先初始化的数据位于 start_data 和 end_data 之间。映射自可执行文件的数据段
+  - 堆用于动态内存分配，亦置于虚拟地址空间中， start_brk 和 brk 指定边界
+  - 栈的位置由 start_stack 定义
+  - 程序的参数和环境分别位于 arg_start - arg_end 和 env_start - env_end 之间
+- 设置进程的指令指针和其它特定于体系结构的寄存器，以便调度器执行程序的 main 函数
+[[file:img/Snipaste_2019-01-07_15-45-16.png]]
+**** 解释二进制格式
+       在Linux内核中，每种二进制格式都表示为下列数据结构(己经简化过)的一个实例:
+#+BEGIN_SRC C
+// include/linux/binfmts.h
+/*
+ * This structure defines the functions that are used to load the binary formats that
+ * linux accepts.
+ */
+struct linux_binfmt {
+	struct list_head lh;
+	struct module *module;
+	int (*load_binary)(struct linux_binprm *);
+	int (*load_shlib)(struct file *);
+	int (*core_dump)(struct coredump_params *cprm);
+	unsigned long min_coredump;	/* minimal dump size */
+} __randomize_layout;
+#+END_SRC
+- load_binary : 加载普通程序
+- load_shlib : 加载共享库
+- core_dump : 程序出错时内存转储
+
+    每种二进制格式首先必须使用 =register_binfmt= 向内核注册。该函数的目的是向一个链表增加一
+种新的一进制格式，该链表的表头是 =fs/exec.c= 中的全局变量 =formats= .  =linux_binfmt= 实例通过其
+ next 成员彼此连接起来。
+*** 退出进程
+    系统调用 exit 的入口 sys_exit。当然工作还是放在 do_exit 里面。将各个应用计数器减一，如果计数为0则将相应的内存区域返还给
+内存管理模块。
+** 调度器
+   任务是在程序之间共享CPU时间，创造并行的错觉。分为调度策略和上下文切换
+*** 概述
+[[file:img/Snipaste_2019-01-07_17-07-22.png]]
+
+存在的问题：
+
+- 进程的不同的优先级(nice值)，重要的进程比次要的进程更多的CPU时间
+- 不能切换术频繁，开销浪费CPU时间
+*** 数据结构
+[[file:img/Snipaste_2019-01-07_17-22-09.png]]
+**** 激活调度：
+
+- 直接：进程打算睡眠或出于其它原因放弃CPU
+- 周期性：以固定的频率运行，检测是不需要切换进程
+**** 通用调度器
+     本质是一个分配器，与其它两个组件交互。
+
+- 调度类用于判断接下来运行哪个进程。内核支持不同的调度策略(完全公平、实时、空闲调度)，调度类以模块代方法实现这些策略，即一个类的代码不需要与其它类的代码交互
+- 选中将要运行的进程后，必须执行底层任务切换。每个进程都刚好属于某一调度类，各个调度类负责管理,
+***** task_struct 的成员
+      与调度相关的成员
+#+BEGIN_SRC C
+// include/linux/sched.h
+struct task_struct {
+...
+	int				prio;
+	int				static_prio;
+	int				normal_prio;
+	unsigned int			rt_priority;
+
+	const struct sched_class	*sched_class;
+	struct sched_entity		se;
+	struct sched_rt_entity		rt;
+#ifdef CONFIG_CGROUP_SCHED
+	struct task_group		*sched_task_group;
+#endif
+	struct sched_dl_entity		dl;
+
+#ifdef CONFIG_PREEMPT_NOTIFIERS
+	/* List of struct preempt_notifier: */
+	struct hlist_head		preempt_notifiers;
+#endif
+
+#ifdef CONFIG_BLK_DEV_IO_TRACE
+	unsigned int			btrace_seq;
+#endif
+
+	unsigned int			policy;
+	int				nr_cpus_allowed;
+	cpumask_t			cpus_allowed;
+...
+}
+#+END_SRC
+- prio 和 normal_prio 表示动态优先级，static_prio 表示静态优先级。静态优先级是进程启动时分配的优先级.可以用
+nice和sche_setscheduler系统调用修改. normal_priority 表示基于静态优先级和调度策略计算出的优先级. 进程分支时,
+子进程会继承 normal_priority.
+- rt_priority 表示时优先级, 值越大优先级越高, [0,99]
+- sched_class 表示所属调度器类
+- 调度器不局限于进程,可以用于组调度, 可用的 CPU 时间在进程组分配, 然后在组内再分配
+- se 为调度实体, st 为实时调度实体(4.20中的 run_list 和 time_silce 包含在此结构中)
+- policy 保存对该进程应用的调度策略, Linux 支持 5 个可能的值
+  - sched_normal : 普通进程, 完全公平调度器
+  - sched_batch 和 sched_IDLE: 次要任务, 完全公平调度器
+  - sched_rr 和 sched_fifo : 软实时进程, 分别实现了循环方法和先进先出机制, 为不公平调度器类, 而是实时调度器类
+- cpus_allowed 是一个位域, 用来限制进程可以在哪些CPU上运行
+***** 调度器类
+      提供了通用调度器和各个调度方法之间的关联, 由特定数据结构中汇集的几个函数指针表示.全局调度器请求的各个操作都
+可以由一个指针表示, 使得无需了解不同调度器类的内部工作原理, 即可创建通用调度器.
+#+BEGIN_SRC C
+// include/linux/sched/sched.h
+struct sched_class {
+	const struct sched_class *next;
+
+	void (*enqueue_task) (struct rq *rq, struct task_struct *p, int flags);
+	void (*dequeue_task) (struct rq *rq, struct task_struct *p, int flags);
+	void (*yield_task)   (struct rq *rq);
+	bool (*yield_to_task)(struct rq *rq, struct task_struct *p, bool preempt);
+
+	void (*check_preempt_curr)(struct rq *rq, struct task_struct *p, int flags);
+
+	/*
+	 * It is the responsibility of the pick_next_task() method that will
+	 * return the next task to call put_prev_task() on the @prev task or
+	 * something equivalent.
+	 *
+	 * May return RETRY_TASK when it finds a higher prio class has runnable
+	 * tasks.
+	 */
+	struct task_struct * (*pick_next_task)(struct rq *rq,
+					       struct task_struct *prev,
+					       struct rq_flags *rf);
+	void (*put_prev_task)(struct rq *rq, struct task_struct *p);
+...
+}
+#+END_SRC
+每个调度类都有一个 struct sched_class 的实例, 且它们的层次结构是平坦的. next 成员将不同的调度类按实时
+、完全公平、空闲顺序连接起来。这个层次结构在编译时已经建立：没有运行时动态增加新调度器的机制
+
+- enqueue_task:向就绪队列添加一个新进程。在进程从睡眠状态变为可运行状态时，即发生该操作
+- dequeue_task:提供逆向操作，将一个进程从就绪队列去除。事实上，在进程从可运行状态切换到不可运行状态时，就会发生该操作。
+- sched_yield : 进程自愿放弃处理器时
+- check_preempt_curr : 用一个新唤醒的进程来抢占当前进程
+- pick_next_task : 选择下一个将要运行的进程
+- put_prev_task : 在用另一个进程代替当前进程之前调用
+- set_curr_task : 进程的调度策发生变化时
+- task_tick : 每次激活周期性调度器时，由周期性调度器调用
+- new_task : 关联 fork 系统调用和调度器
+***** 就绪队列
+      核心调度器用于管理活动进程的主要数据结构称之为就绪队列，每个CPU都有自己的就绪队列，各个活动进程只出现在一个就绪队列中，在多个CPU同时运行一个进程是不可能的。
+#+BEGIN_SRC C
+// sched.h
+struct rq {
+	unsigned int		nr_running;
+#ifdef CONFIG_NUMA_BALANCING
+	unsigned int		nr_numa_running;
+	unsigned int		nr_preferred_running;
+	unsigned int		numa_migrate_on;
+#endif
+	#define CPU_LOAD_IDX_MAX 5
+	unsigned long		cpu_load[CPU_LOAD_IDX_MAX];
+...
+	/* capture load from *all* tasks on this CPU: */
+	struct load_weight	load;
+	unsigned long		nr_load_updates;
+	u64			nr_switches;
+
+	struct cfs_rq		cfs;
+	struct rt_rq		rt;
+	struct dl_rq		dl;
+...
+	struct task_struct	*curr;
+	struct task_struct	*idle;
+	struct task_struct	*stop;
+	unsigned long		next_balance;
+	struct mm_struct	*prev_mm;
+
+	unsigned int		clock_update_flags;
+	u64			clock;
+	u64			clock_task;
+...
+}
+#+END_SRC
+- nr_running : 指定了队列上可运行的进程的数目
+- load : 提供就绪队列当前负荷的度量
+- cpu_load : 跟踪此前的负荷状态
+- cfs 和 rt : 嵌入的子就绪队列，分别用于完全公平调度器和实时调度器
+- curr : 指向当前进程的 task_struct 实例
+- idle : 指向空闲进程的 task_struct 实例
+- clock : 实现就绪队列自身的时钟
+
+系统中所有的就绪队列都在 runqueues 数组中，每个元素分别对应于系统中一个CPU。
+#+BEGIN_SRC C
+// kernel/sched/core.c
+DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
+#+END_SRC
+***** 调度实体
+      调度器可以操作比进程更一般的实体。
+#+BEGIN_SRC C
+// include/linux/sched.h
+struct sched_entity {
+	/* For load-balancing: */
+	struct load_weight		load;
+	unsigned long			runnable_weight;
+	struct rb_node			run_node;
+	struct list_head		group_node;
+	unsigned int			on_rq;
+
+	u64				exec_start;
+	u64				sum_exec_runtime;
+	u64				vruntime;
+	u64				prev_sum_exec_runtime;
+...
+}
+#+END_SRC
+如果编译内核时启用了调度器统计，会包含很多用于统计的成员
+
+- load : 权重，决定了各个实体占队列总负荷的比例
+- run_node : 红黑树结点， 便于排序
+- on_rq　: 是否在就绪队列上接受调度
+- sum_exec_runtime : 记录消耗的 CPU 时间用于完全公平调度器
+- vruntime : 虚拟时钟
+- 进程撤销时，当前 sum_exec_runtime 保存到 prev_exec_runtime
+*** 处理优先级
+**** 优先级的内核表示
+     在用户空间可以通过 nice 命令设置进程的静态优先级，这中内部会调用 nice 系统调用。
+nice 值在 [-20 ~ 19] 之间，值越低优先级越高。内核使用 (0~139] 的数值表示内部优先级, 值越低优先级越高。
+nice 值映射到 [100~139]。
+
+[[file:img/Snipaste_2019-01-08_15-31-07.png]]
+**** 计算优先级
+     除了静态优先级(task_struct->static_prio)，还需要考虑动态优先级(task_struct->prio)、普通优先级(task_struct->normal_prio)。
+#+BEGIN_SRC C
+// kernel/sched/core.c
+/*
+ * Calculate the current priority, i.e. the priority
+ * taken into account by the scheduler. This value might
+ * be boosted by RT tasks, or might be boosted by
+ * interactivity modifiers. Will be RT if the task got
+ * RT-boosted. If not then it returns p->normal_prio.
+ */
+static int effective_prio(struct task_struct *p)
+{
+	p->normal_prio = normal_prio(p);
+	/*
+	 * If we are RT tasks or we were boosted to RT priority,
+	 * keep the priority unchanged. Otherwise, update priority
+	 * to the normal priority:
+	 */
+	if (!rt_prio(p->prio))
+		return p->normal_prio;
+	return p->prio;
+}
+#+END_SRC
+
+普通优先级计算方法：
+
+#+BEGIN_SRC C
+// kernel/sched/core.c
+static inline int normal_prio(struct task_struct *p)
+{
+	int prio;
+
+	if (task_has_dl_policy(p)) // deadline 进程
+		prio = MAX_DL_PRIO-1;
+	else if (task_has_rt_policy(p)) /* 实时进程 */
+		prio = MAX_RT_PRIO-1 - p->rt_priority;
+	else  /* 普通进程 */
+		prio = __normal_prio(p);
+	return prio;
+}
+#+END_SRC
+
+<img src="img/Snipaste_2019-01-08_15-57-28.png"
+alt="" align="left"
+title="image title"
+class="img"
+</img>
+**** 计算负荷权重
+     set_load_weight 负责根据进程类型及其静态优先级计算负荷权重。
+#+BEGIN_SRC C
+// include/linux/sched.h
+struct load_weight {
+	unsigned long			weight;
+	u32				inv_weight;
+};
+#+END_SRC
+- weight : 负荷权重自身
+- inv_weight : 用于计算被负荷除的结果
+
+优先级转换为权重表：
+
+#+BEGIN_SRC C
+// kernel/sched/core.c
+const int sched_prio_to_weight[40] = {
+ /* -20 */     88761,     71755,     56483,     46273,     36291,
+ /* -15 */     29154,     23254,     18705,     14949,     11916,
+ /* -10 */      9548,      7620,      6100,      4904,      3906,
+ /*  -5 */      3121,      2501,      1991,      1586,      1277,
+ /*   0 */      1024,       820,       655,       526,       423,
+ /*   5 */       335,       272,       215,       172,       137,
+ /*  10 */       110,        87,        70,        56,        45,
+ /*  15 */        36,        29,        23,        18,        15,
+};
+#+END_SRC
+    对内核使用的范围[0,39]中的每个nice级别，该数组中都有一个对应项口各数组之间的乘数因子
+是l.25。要知道为何使用该因子，可考虑下列例子。两个进程A和B在nice级别0运行，因此两个进程
+的CPU份额相同，即都是50%。级别为0的进程，其权重查表可知为1024。每个进程的份额是1024/
+(1024+1024)/1024=0.5，即50%。
+    如果进程B的优先级加1,那么其CPU份额应该减少10%。换句话说，这意味着进程A得到总的CPU
+时间的55%，而进程B得到45%。优先级增加1导致权重减少，即10241/1.25 = 820。因此进程A现在将得
+到的CPU份额是1024/(1024+820)=0.55，而进程B的份额则足820/(1024+820)=0.45，这样就产生了10%
+的差值。
+
+实时进程的权重是普通进程的两倍，空闲进程的权重总是最小。
+
+#+BEGIN_SRC C
+// kernel/sched/core.c
+static void set_load_weight(struct task_struct *p, bool update_load)
+{
+	int prio = p->static_prio - MAX_RT_PRIO;
+	struct load_weight *load = &p->se.load;
+
+	/*
+	 * SCHED_IDLE tasks get minimal weight:
+	 */
+	if (idle_policy(p->policy)) {
+		load->weight = scale_load(WEIGHT_IDLEPRIO);
+		load->inv_weight = WMULT_IDLEPRIO;
+		p->se.runnable_weight = load->weight;
+		return;
+	}
+
+	/*
+	 * SCHED_OTHER tasks have to update their load when changing their
+	 * weight
+	 */
+	if (update_load && p->sched_class == &fair_sched_class) {
+		reweight_task(p, prio);
+	} else {
+		load->weight = scale_load(sched_prio_to_weight[prio]);
+		load->inv_weight = sched_prio_to_wmult[prio];
+		p->se.runnable_weight = load->weight;
+	}
+}
+#+END_SRC
+
+<img src="img/Snipaste_2019-01-08_16-30-53.png"
+alt="" align="left"
+title="image title"
+class="img"
+</img>
+
+就绪队列中权重相关函数：
+
+#+BEGIN_SRC C
+// kernel/sched/fair.c
+static inline void update_load_add(struct load_weight *lw, unsigned long inc)
+{
+	lw->weight += inc;
+	lw->inv_weight = 0;
+}
+#+END_SRC
+**** 核心调度器 
+***** 周期性调度器
+    周期性调度器在。scheduler_tick中实现。如果系统正在活动中。内核会按照频率H}白动调用该
+函数。如果没有进程在等待调度，那么在计算机电力供应不足的情况下，也可以关闭该调度器以减少
+电能消耗。例如，笔记本电脑或小型嵌入式系统。
+
+主要任务:
+
+1. 管理内核中与整个系统和各个进程的调度相关的统计量
+2. 激活负责当前进程的调度类的周期性调度方法
+
+#+BEGIN_SRC C
+// kernel/sched/core.c:3036
+void scheduler_tick(void)
+{
+    /*  1.  获取当前cpu上的全局就绪队列rq和当前运行的进程curr  */
+
+    /*  1.1 在于SMP的情况下，获得当前CPU的ID。如果不是SMP，那么就返回0  */
+    int cpu = smp_processor_id();
+
+    /*  1.2 获取cpu的全局就绪队列rq, 每个CPU都有一个就绪队列rq  */
+    struct rq *rq = cpu_rq(cpu);
+
+    /*  1.3 获取就绪队列上正在运行的进程curr  */
+    struct task_struct *curr = rq->curr;
+    struct rq_flags rf;
+
+    sched_clock_tick();
+
+    /*  2 更新rq上的统计信息, 并执行进程对应调度类的周期性的调度  */
+
+    /*  加锁 */
+    rq_lock(rq, &rf);
+
+    /*  2.1 更新rq的当前时间戳.即使rq->clock变为当前时间戳  */
+    update_rq_clock(rq);
+
+    /*  2.2 执行当前运行进程所在调度类的task_tick函数进行周期性调度  */
+    curr->sched_class->task_tick(rq, curr, 0);
+
+    /*  2.3 更新rq的负载信息,  即就绪队列的cpu_load[]数据
+     *  本质是将数组中先前存储的负荷值向后移动一个位置，
+     *  将当前负荷记入数组的第一个位置 
+     */
+    update_cpu_load_active(rq);
+
+    /*  2.4 更新cpu的active count活动计数
+     *  主要是更新全局cpu就绪队列的calc_load_update
+     */
+    calc_global_load_tick(rq);
+
+    /* 解锁 */
+    rq_unlock(rq, &rf);
+
+    /* 与perf计数事件相关 */
+    perf_event_task_tick();
+
+#ifdef CONFIG_SMP
+     /* 当前CPU是否空闲 */
+    rq->idle_balance = idle_cpu(cpu);
+
+    /* 如果是时候进行周期性负载平衡，则触发SCHED_SOFTIRQ */
+    trigger_load_balance(rq);
+#endif
+}
+#+END_SRC
+***** 主调度器
+要将CPU分配给与当前进程不同的另一个进程，都会直接调用主调度器(schedule)。
+#+BEGIN_QUOTE
+__sched 前缀，用于可能调用 schedule 的函数，包括自身：
+#+BEGIN_SRC c
+void __sched some_function(...) {
+...
+    schedule();
+...
+}
+#+END_SRC
+其目的在于将相关函数的代码编译之后放到目标文件的一个 特定的段中， 即
+=.sched.text= 中。使得内核在显示栈转储或类似信息时，忽略所有与调度有关的调用。因
+为调度器函数不是普通代码的一部分，在这种情况下是没有意义的。
+#+END_QUOTE
+主调度器的实现：
+#+BEGIN_SRC c
+// kernel/sched/core.c
+asmlinkage __visible void __sched schedule(void)
+{
+	struct task_struct *tsk = current;
+
+	sched_submit_work(tsk);
+	do {
+		preempt_disable();  // 关闭抢占
+		__schedule(false);
+		sched_preempt_enable_no_resched();
+	} while (need_resched());
+}
+
+static void __sched notrace __schedule(bool preempt)
+{
+	struct task_struct *prev, *next;
+	unsigned long *switch_count;
+	struct rq_flags rf;
+	struct rq *rq;
+	int cpu;
+
+  // 这部分与周期调度器功能一样
+	cpu = smp_processor_id();
+	rq = cpu_rq(cpu);
+	prev = rq->curr;
+
+  // 一些检查和统计
+	schedule_debug(prev);
+
+  // 处理硬实时任务
+	if (sched_feat(HRTICK))
+		hrtick_clear(rq);
+
+	local_irq_disable();
+	rcu_note_context_switch(preempt);
+
+	/*
+	 ,* Make sure that signal_pending_state()->signal_pending() below
+	 ,* can't be reordered with __set_current_state(TASK_INTERRUPTIBLE)
+	 ,* done by the caller to avoid the race with signal_wake_up().
+	 ,*
+	 ,* The membarrier system call requires a full memory barrier
+	 ,* after coming from user-space, before storing to rq->curr.
+	 ,*/
+	rq_lock(rq, &rf);
+	smp_mb__after_spinlock();
+
+	/* Promote REQ to ACT */
+	rq->clock_update_flags <<= 1;
+	update_rq_clock(rq);
+
+  // 上下文切换的次数
+	switch_count = &prev->nivcsw;
+  /*
+    如果当前进程进程原来牌可中断睡眼状态，这时候接到信号，那么必须再次提升为运行进程。否则用相应的调度器类的方法使
+    里程停止活动 （deactive_task实质上调用了 sched_class->dequeue_task)
+   ,*/
+	if (!preempt && prev->state) {
+		if (unlikely(signal_pending_state(prev->state, prev))) {
+			prev->state = TASK_RUNNING;
+		} else {
+			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+			prev->on_rq = 0;
+
+			if (prev->in_iowait) {
+				atomic_inc(&rq->nr_iowait);
+				delayacct_blkio_start();
+			}
+
+			/*
+			 ,* If a worker went to sleep, notify and ask workqueue
+			 ,* whether it wants to wake up a task to maintain
+			 ,* concurrency.
+			 ,*/
+			if (prev->flags & PF_WQ_WORKER) {
+				struct task_struct *to_wakeup;
+
+				to_wakeup = wq_worker_sleeping(prev);
+				if (to_wakeup)
+					try_to_wake_up_local(to_wakeup, &rf);
+			}
+		}
+		switch_count = &prev->nvcsw;
+	}
+
+  // 调度类选择下一个该挨靠的进程
+	next = pick_next_task(rq, prev, &rf);
+  // 清除当前运行进程 task_struct 中的重调度标志 TIF_NEED_RESCHED 和抢占标志
+	clear_tsk_need_resched(prev);
+	clear_preempt_need_resched();
+
+	if (likely(prev != next)) {
+		rq->nr_switches++;
+		rq->curr = next;
+		/*
+		 ,* The membarrier system call requires each architecture
+		 ,* to have a full memory barrier after updating
+		 ,* rq->curr, before returning to user-space.
+		 ,*
+		 ,* Here are the schemes providing that barrier on the
+		 ,* various architectures:
+		 ,* - mm ? switch_mm() : mmdrop() for x86, s390, sparc, PowerPC.
+		 ,*   switch_mm() rely on membarrier_arch_switch_mm() on PowerPC.
+		 ,* - finish_lock_switch() for weakly-ordered
+		 ,*   architectures where spin_unlock is a full barrier,
+		 ,* - switch_to() for arm64 (weakly-ordered, spin_unlock
+		 ,*   is a RELEASE barrier),
+		 ,*/
+		++*switch_count;
+
+		trace_sched_switch(preempt, prev, next);
+
+		/* Also unlocks the rq: */ // 硬件级的进程切换
+		rq = context_switch(rq, prev, next, &rf);
+	} else {   // 其它进程都无法运行，被迫留在CPU上
+		rq->clock_update_flags &= ~(RQCF_ACT_SKIP|RQCF_REQ_SKIP);
+		rq_unlock_irq(rq, &rf);
+	}
+
+	balance_callback(rq);
+}
+#+END_SRC
+***** 与 fork 的交互
+使用 fork 或其变体建立新进程时，调度器有机会用 sched_fork 函数挂钩到该进程。主要
+执行三个操作：
+
+- 初始化新进程与调度相关的字段
+  建立数据结构
+  确定进程的动态优先级
+
+在使用 =wake_up_new_task= 唤醒新进程时，调度器与进程创建逻辑交互的第二个时机：内
+核会调用调度类的 task_new 函数。将新进程加入到相应类的就绪队列中。
+***** 上下文切换
+辅助函数 context_switch 作为分配器，调用所需的特定于体系结构的方法。如 switch_mm 、switch_to
+#+BEGIN_SRC c
+static __always_inline struct rq *
+context_switch(struct rq *rq, struct task_struct *prev,
+	       struct task_struct *next, struct rq_flags *rf)
+{
+	struct mm_struct *mm, *oldmm;
+
+  // 调用每个体系结构必须定义的 prepare_arch_switch hook函数，为切换作准备
+	prepare_task_switch(rq, prev, next);
+
+	mm = next->mm;
+	oldmm = prev->active_mm;
+	/*
+	 ,* For paravirt, this is coupled with an exit in switch_to to
+	 ,* combine the page table reload and the switch backend into
+	 ,* one hypercall.
+	 ,*/
+	arch_start_context_switch(prev);
+
+	/*
+	 ,* If mm is non-NULL, we pass through switch_mm(). If mm is
+	 ,* NULL, we will pass through mmdrop() in finish_task_switch().
+	 ,* Both of these contain the full memory barrier required by
+	 ,* membarrier after storing to rq->curr, before returning to
+	 ,* user-space.
+	 ,*/
+	if (!mm) {
+		next->active_mm = oldmm;
+		mmgrab(oldmm);
+      // 通告底层体系结构不埼切换虚拟地址的用户空间
+		enter_lazy_tlb(oldmm, next);
+	} else  // 更换通过 task_struct->mm 描述的内存管理上下文
+		switch_mm_irqs_off(oldmm, mm, next);
+
+	if (!prev->mm) {
+      // 如果前一进程是内核线程(即pre->mm == NULL)， 则其 active_mm 指针必须重置为空，断开与借用的地址空间的联系
+		prev->active_mm = NULL;
+		rq->prev_mm = oldmm;
+	}
+
+	rq->clock_update_flags &= ~(RQCF_ACT_SKIP|RQCF_REQ_SKIP);
+
+	prepare_lock_switch(rq, next, rf);
+
+	/* Here we just switch the register state and the stack. */
+	/* 切换寄存器和栈. */
+	switch_to(prev, next, prev);
+	barrier();
+
+	return finish_task_switch(prev);
+}
+#+END_SRC
+switch_to 之后的代码在下一次运行时才会执行。 finish_task_switch 完成清理工作。
+barrier 语句是一个编译器指令，确保 switch_to 和 finish_task_switch 语句的执行顺
+序不会因为任何可能的优化而改变。
+****** switch_to 的复杂之处
+finish_task_switch 的有趣之处在于，调度过程可能选择了一个新进程，而清理则是针对
+此前的活动进程。请注意，这不是发起上下文切换的那个进程，而是系统中随机的某个其他进程!内核必
+须想办法使得该进程能够与 context_switch 例程通信，这可以通过 switch_to 宏实现。每个体系结构
+都必须实现它，而且有一个异乎寻常的调用约定，即通过3个参数传递两个变量!这是因为上下文切
+换不仅涉及两个进程，而是3个进程。该情形如图所示。
+
+[[file:img/Snipaste_2019-01-09_15-42-07.png]]
+
+假定3个进程A、B和C在系统上运行。在某个时间点，内核决定从进程A切换到进程B,然后从进
+程B到进程C，再接下来从进程C切换回进程A。在每个switch_to调用之前，next和prev指针位于各
+进程的栈上，prev指向当前运行的进程，而next指向将要运行的下一个进程。为执行从prev到next
+的切换，switch_to的前两个参数足够了，对进程A来说，prev指向进程A而next指向进程B。
+
+在进程A被选中再次执行时，会出现一个问题。控制权返回至 switch_to 之后的点，如果栈准确
+地恢复到切换之前的状态，那么prev和next仍然指向切换之前的值，即next=B而prev=A。在这
+种情况下，内核无法知道实际上在进程A之前运行的是进程C。
+
+因此，在新进程被选中时，底层的进程切换例程必须将此前执行的进程提供给context_switch
+由于控制流会回到该函数的中间，这无法用普通的函数返回值来做到，因此使用了一个3个参数的宏。
+但逻辑上的效果是相同的，仿佛switch_to是带有两个参数的函数，而且返问了一个指向此前运行进
+程的指针。switch_to宏实际上执行的代码如下:
+#+BEGIN_SRC c
+prev=switch_ro(prev, next);
+#+END_SRC
+其中返回的prev值并不是用作参数的prev直,而是上一个执行的进程。在上述例子中，进程A提供给
+switch_to的参数是A和B，但恢复执行后得到的返回值是prey=c。内核实现该行为特性的方式依赖
+于底层的体系结构，但内核显然可以通过考虑两个进程的核心态栈来重建所要的信息。对可以访问所
+有内存的内核而言，这两个栈显然是同时可用的.
+****** 惰性FPU模式
+上下文切换的开解比较大，因此内核使用惰性FPU模式技巧来减少所需的CPU时间。
+
+- 原理：对于浮点寄存器,除非有应用程序实际使用，否则不保存
