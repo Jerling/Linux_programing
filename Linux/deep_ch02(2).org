@@ -553,11 +553,7 @@ static inline int normal_prio(struct task_struct *p)
 }
 #+END_SRC
 
-<img src="img/Snipaste_2019-01-08_15-57-28.png"
-alt="" align="left"
-title="image title"
-class="img"
-</img>
+[[file:img/Snipaste_2019-01-08_15-57-28.png]]
 **** 计算负荷权重
      set_load_weight 负责根据进程类型及其静态优先级计算负荷权重。
 #+BEGIN_SRC C
@@ -627,11 +623,7 @@ static void set_load_weight(struct task_struct *p, bool update_load)
 }
 #+END_SRC
 
-<img src="img/Snipaste_2019-01-08_16-30-53.png"
-alt="" align="left"
-title="image title"
-class="img"
-</img>
+[[file:img/Snipaste_2019-01-08_16-30-53.png]]
 
 就绪队列中权重相关函数：
 
