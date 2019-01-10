@@ -88,3 +88,32 @@ int main(int, char* [])
     }
 }
 #+END_SRC
+
+**** 异步日志解析
+#+BEGIN_COMMENT
+
+#+BEGIN_SRC plantuml :file images/async_log.png
+:start;
+:创建带互斥量的logger对象;
+note right
+    使用异步工厂模式(async_factorty)
+end note
+:调用异步工厂create方法创建logger对象;
+note right
+    注册到注册中心并初始化
+end note
+:使用info方法输出日志到日志文件中;
+note right
+    这里会对输出日志等级进行比较
+    如果消息等级大于等于注册等级直接退出不输出
+    继续判断消息等级大于等于 sink 的等级则输出
+end note
+:注销所有的logger对象;
+:end;
+#+END_SRC
+
+#+RESULTS:
+
+#+END_COMMENT
+[[file:images/async_log.png]]
+
