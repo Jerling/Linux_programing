@@ -90,8 +90,8 @@ int main(int, char* [])
 #+END_SRC
 
 **** 异步日志解析
-#+BEGIN_COMMENT
 
+#+BEGIN_COMMENT
 #+BEGIN_SRC plantuml :file images/async_log.png
 :start;
 :创建带互斥量的logger对象;
@@ -101,6 +101,9 @@ end note
 :调用异步工厂create方法创建logger对象;
 note right
     注册到注册中心并初始化
+    这里会创建为注册中心创建
+    一个单线程的线程池，默认
+    消息队列大小为 8192
 end note
 :使用info方法输出日志到日志文件中;
 note right
@@ -113,7 +116,65 @@ end note
 #+END_SRC
 
 #+RESULTS:
-
 #+END_COMMENT
 [[file:images/async_log.png]]
 
+**** 总结
+这里使用阻塞的异步日志，使用异步工厂模式创建 logger 对象。这里有个语法值得留意，
+在调用工厂方法的时候在前面注明模板类型：
+#+BEGIN_SRC c
+//
+// factory functions
+//
+template<typename Factory = default_factory>
+inline std::shared_ptr<logger> basic_logger_mt(const std::string &logger_name, const filename_t &filename, bool truncate = false)
+{
+    return Factory::template create<sinks::basic_file_sink_mt>(logger_name, filename, truncate);
+}
+#+END_SRC
+
+=T::template function<T>= 与 =T::function= 的区别：
+
+- 前者只能用于模板方法，而后者除了普通方法，还可以应用到带默认模板的方法中，也就
+  是说，后者不能出现模板具现化
+- 相同的是都只能用于 =static= 方法，这和普通方法只能通过实例访问有关
+
+举个简单例子：
+#+BEGIN_SRC c
+#include <iostream>
+
+class A {
+ public:
+  ~A();
+  template<typename T=A>
+  static int f() {
+    std::cout << "a" << std::endl;
+    return 1;
+  }
+};
+
+class B {
+ public:
+  ~B();
+  template<typename T=B>
+  static int f() {
+    std::cout << "b" << std::endl;
+    return 2;
+  }
+};
+
+template<typename T>
+int func() {
+  return T::template f<T>();
+
+ /*
+,只要加上模板具现化就报错
+,*/
+  // return T::f();
+}
+
+int main() {
+  std::cout << func<A>() << std::endl; 
+  return 0;
+}
+#+END_SRC
