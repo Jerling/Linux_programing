@@ -179,3 +179,45 @@ int main() {
   return 0;
 }
 #+END_SRC
+
+*** Create a logger with multiple sinks
+#+BEGIN_SRC c++
+#include <iostream>
+#include "spdlog/spdlog.h"
+#include "spdlog/sinks/daily_file_sink.h"
+int main(int, char* [])
+{
+    try
+    {
+        auto daily_sink = std::make_shared<spdlog::sinks::daily_file_sink_mt>("logfile", 23, 59);
+        // create synchronous  loggers
+        auto net_logger = std::make_shared<spdlog::logger>("net", daily_sink);
+        auto hw_logger  = std::make_shared<spdlog::logger>("hw",  daily_sink);
+        auto db_logger  = std::make_shared<spdlog::logger>("db",  daily_sink);      
+
+        net_logger->set_level(spdlog::level::critical); // independent levels
+        hw_logger->set_level(spdlog::level::debug);
+         
+        // globally register the loggers so so the can be accessed using spdlog::get(logger_name)
+        spdlog::register_logger(net_logger); // 注册之后，就只能打印等大于等于 critical 的日志
+        net_logger->critical("Test msg");
+        hw_logger->info("Inof msg");
+    }
+    catch (const spdlog::spdlog_ex& ex)
+    {
+        std::cout << "Log initialization failed: " << ex.what() << std::endl;
+    }
+}
+#+END_SRC
+
+**** 例子解析
+通过之前的一些例子分析，大体的框架基本是这样的， spdlog 日志系统前后端分离，
+logger 对象对应于前端日志， sink 对象对应于后端，将日志写入日志文件（标准输出、
+普通文件、 socket 等）。在前一个例子中就知道前后端分别对应于一个线程处理日志，这
+个和目前学习的 mudou 网络库的日志处理如出一辙，不过 mudou 使用双缓冲，而 spdlog
+使用单缓冲。
+
+就本例子而言， =daily_file_sink_mt= 其实是使用模板为 std::mutex 互斥量的
+=daiy_file_sink=  对象，该对象还有一个默认模板参数，专门处理日常日志文件明明的，
+默认为按日期命名，参数为每日的滚动更新时间，比如例子中设置每天 23:59 这个时间点
+更新日志文件。
