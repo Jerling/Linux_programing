@@ -1,0 +1,597 @@
+#+TITLE: 进程管理和调度
+* 完全公平调度类
+核心调度器必须知道的有关完全公平调度器的所有信息包含在 =fair_sched_class= 中
+#+BEGIN_SRC c
+/*
+ * All the scheduling class methods:
+ */
+const struct sched_class fair_sched_class = {
+	.next			= &idle_sched_class,
+	.enqueue_task		= enqueue_task_fair,
+	.dequeue_task		= dequeue_task_fair,
+	.yield_task		= yield_task_fair,
+	.yield_to_task		= yield_to_task_fair,
+
+	.check_preempt_curr	= check_preempt_wakeup,
+
+	.pick_next_task		= pick_next_task_fair,
+	.put_prev_task		= put_prev_task_fair,
+
+#ifdef CONFIG_SMP
+	.select_task_rq		= select_task_rq_fair,
+	.migrate_task_rq	= migrate_task_rq_fair,
+
+	.rq_online		= rq_online_fair,
+	.rq_offline		= rq_offline_fair,
+
+	.task_dead		= task_dead_fair,
+	.set_cpus_allowed	= set_cpus_allowed_common,
+#endif
+
+	.set_curr_task          = set_curr_task_fair,
+	.task_tick		= task_tick_fair,
+	.task_fork		= task_fork_fair,
+
+	.prio_changed		= prio_changed_fair,
+	.switched_from		= switched_from_fair,
+	.switched_to		= switched_to_fair,
+
+	.get_rr_interval	= get_rr_interval_fair,
+
+	.update_curr		= update_curr_fair,
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	.task_change_group	= task_change_group_fair,
+#endif
+};
+#+END_SRC
+** 数据结构
+同样，先看就绪队列。
+#+BEGIN_SRC c
+/* CFS-related fields in a runqueue */
+struct cfs_rq {
+	struct load_weight	load;
+	unsigned long		runnable_weight;
+	unsigned int		nr_running;       // 可运行进程数目
+	unsigned int		h_nr_running;
+
+	u64			exec_clock;
+	u64			min_vruntime;            // 跟踪记录队列上所有进程的最小虚拟运行时间
+#ifndef CONFIG_64BIT
+	u64			min_vruntime_copy;
+#endif
+
+	struct rb_root_cached	tasks_timeline; // 按埋单排序的红黑树中管理所有进程
+
+	/*
+	 * 'curr' points to currently running entity on this cfs_rq.
+	 * It is set to NULL otherwise (i.e when none are currently running).
+	 */
+	struct sched_entity	*curr;             // 当前调度实体
+	struct sched_entity	*next;             // 有些进程急需运行，不必遵从CFS,调度器会检查 next 是否需要调度， 有就调度next
+	struct sched_entity	*last;
+	struct sched_entity	*skip;             // 略过进程
+
+#ifdef	CONFIG_SCHED_DEBUG
+	unsigned int		nr_spread_over;
+#endif
+
+#ifdef CONFIG_SMP
+	/*
+	 * CFS load tracking
+	 */
+	struct sched_avg	avg;
+#ifndef CONFIG_64BIT
+	u64			load_last_update_time_copy;
+#endif
+	struct {
+		raw_spinlock_t	lock ____cacheline_aligned;
+		int		nr;
+		unsigned long	load_avg;
+		unsigned long	util_avg;
+		unsigned long	runnable_sum;
+	} removed;
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	unsigned long		tg_load_avg_contrib;
+	long			propagate;
+	long			prop_runnable_sum;
+
+	/*
+	 *   h_load = weight * f(tg)
+	 *
+	 * Where f(tg) is the recursive weight fraction assigned to
+	 * this group.
+	 */
+	unsigned long		h_load;
+	u64			last_h_load_update;
+	struct sched_entity	*h_load_next;
+#endif /* CONFIG_FAIR_GROUP_SCHED */
+#endif /* CONFIG_SMP */
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	struct rq		*rq;	/* CPU runqueue to which this cfs_rq is attached */
+
+	/*
+	 * leaf cfs_rqs are those that hold tasks (lowest schedulable entity in
+	 * a hierarchy). Non-leaf lrqs hold other higher schedulable entities
+	 * (like users, containers etc.)
+	 *
+	 * leaf_cfs_rq_list ties together list of leaf cfs_rq's in a CPU.
+	 * This list is used during load balance.
+	 */
+	int			on_list;
+	struct list_head	leaf_cfs_rq_list;
+	struct task_group	*tg;	/* group that "owns" this runqueue */
+
+#ifdef CONFIG_CFS_BANDWIDTH
+	int			runtime_enabled;
+	int			expires_seq;
+	u64			runtime_expires;
+	s64			runtime_remaining;
+
+	u64			throttled_clock;
+	u64			throttled_clock_task;
+	u64			throttled_clock_task_time;
+	int			throttled;
+	int			throttle_count;
+	struct list_head	throttled_list;
+#endif /* CONFIG_CFS_BANDWIDTH */
+#endif /* CONFIG_FAIR_GROUP_SCHED */
+};
+#+END_SRC
+** CFS 操作
+*** 虚拟时钟
+根据实际时钟和与每个进程相关的负荷权重推算出来， 计算放在 update_curr 中
+
+[[file:img/Snipaste_2019-01-10_10-27-37.png]]
+
+- 确定当前进程并获取主调度器就绪队列的实际时钟
+- 计算当前和上一次更新负荷统计量时两次的时间差并将其余工作委托给 __update_curr。
+- __update_curr 更新当前进程在CPU上执行花费的物理埋单和虚拟时间
+  - 物理时间：将时间差加到先前统计的时间即可
+  - 虚拟时间：对于运行在nice级别0的进程来说，根据定义虚拟时间和物理时间是相等的，
+    使用不同的优先级时，必须根据进程的负荷权重重新衡定时间
+- 忽略舍入和溢出检查， calc_delta_fair ：
+
+  [[file:img/Snipaste_2019-01-10_10-46-09.png]]
+
+  [[file/img/Snipaste_2019-01-10_10-47-20.png]]
+
+- 内核设置 min_vruntime ， 必须小心保证该值是单调递增的。
+*** 延迟跟踪
+良好的调度延迟，即保证每个可运行的进程都应该至少运行一次的某个时间间隔。它在
+=sysctl_sched_latency= 给出，可通过 =/proc/sys/kernel/sched_latency_ns= 控制。默
+认为20秒。 =sched_nr_latency= 控制一个延迟周期中处理的最大活动进程数。
+
+对于某个可调度实体表示的进程，分配时间计算 :
+#+BEGIN_SRC c
+// https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/fair.c#L657
+static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	u64 slice = __sched_period(cfs_rq->nr_running + !se->on_rq);
+
+	for_each_sched_entity(se) {
+		struct load_weight *load;
+		struct load_weight lw;
+
+		cfs_rq = cfs_rq_of(se);
+		load = &cfs_rq->load;
+
+		if (unlikely(!se->on_rq)) {
+			lw = cfs_rq->load;
+
+			update_load_add(&lw, se->load.weight);
+			load = &lw;
+		}
+		slice = __calc_delta(slice, se->load.weight, load);
+	}
+	return slice;
+}
+#+END_SRC
+
+内核有时候也必须知道等价的虚拟时间：
+#+BEGIN_SRC C
+//https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/fair.c#L684
+static u64 sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	return calc_delta_fair(sched_slice(cfs_rq, se), se);
+}
+#+END_SRC
+之前提到虚拟时间对应的计算公式为： =vtime = time x (NICE_0_LOAD / weight)= 。该
+公式也用于转分配到的延迟时间间隔。
+** 队列操作
+- enqueue_task_fair : 增加就绪队列成员
+- dequeue_task_fair : 删除就绪队列成员
+
+enqueue_task_fair 的代码流程 :
+
+[[file:img/Snipaste_2019-01-11_13-38-46.png]]
+
+如果通过 struct sched_entity 的 on_rq 成员判断进程己经在就绪队列上，则无事可做。否则，
+具体的工作委托给 enqueue_entity 完成，其中内核会借机用 update_curr 更新统计童。
+如果进程最近在运行，且其虚拟运行时间仍然有效，直接 __enqueue_entity 加入到红黑树中。
+如果进程此前在睡眠，则在 place_entity 中首先调整进程的虚拟运行时间：
+#+BEGIN_SRC C
+// https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/fair.c#L3783
+static void
+place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
+{
+	u64 vruntime = cfs_rq->min_vruntime;
+
+	/*
+	 * The 'current' period is already promised to the current tasks,
+	 * however the extra weight of the new task will slow them down a
+	 * little, place the new task so that it fits in the slot that
+	 * stays open at the end.
+	 */
+	if (initial && sched_feat(START_DEBIT))
+		vruntime += sched_vslice(cfs_rq, se);
+
+	/* sleeps up to a single latency don't count. */
+	if (!initial) {
+		unsigned long thresh = sysctl_sched_latency;
+
+		/*
+		 * Halve their sleep time's effect, to allow
+		 * for a gentler effect of sleepers:
+		 */
+		if (sched_feat(GENTLE_FAIR_SLEEPERS))
+			thresh >>= 1;
+
+		vruntime -= thresh;
+	}
+
+	/* ensure we never gain time by being placed backwards. */
+	se->vruntime = max_vruntime(se->vruntime, vruntime);
+}
+#+END_SRC
+** 选择下一个进程
+由 pick_next_task_fair 执行。
+
+[[file:img/Snipaste_2019-01-11_13-54-55.png]]
+
+- nr_running=0，直接返回，接下来的工作由 pick_next_entity 完成
+- 最左边的进程可用， =first_fair= 快速确定。然后用 =__pick_next_entity= 从红黑树
+  中取出 =sched_entity= 实例。使用 containers_of 机制完成，因为红黑树管理的节点
+  是 rb_node 实例。而 rb_node 即嵌入在 sched_entity 中。
+
+选完进程后，需要使用 set_next_entity 将其标记为运行进程。
+#+BEGIN_SRC C
+// https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/fair.c#L4060
+static void
+set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	/* 'current' is not kept within the tree. */
+	if (se->on_rq) {  
+		/*
+		 * Any task has to be enqueued before it get to execute on
+		 * a CPU. So account for the time it spent waiting on the
+		 * runqueue.
+		 */
+		update_stats_wait_end(cfs_rq, se);
+		__dequeue_entity(cfs_rq, se);           // 将当前进程从就绪队列中去掉
+		update_load_avg(cfs_rq, se, UPDATE_TG);
+	}
+
+	update_stats_curr_start(cfs_rq, se);
+	cfs_rq->curr = se;                          // 关联当前进程和就绪队列
+
+	/*
+	 * Track our maximum slice length, if the CPU's load is at
+	 * least twice that of our own weight (i.e. dont track it
+	 * when there are only lesser-weight tasks around):
+	 */
+	if (schedstat_enabled() && rq_of(cfs_rq)->load.weight >= 2*se->load.weight) {
+		schedstat_set(se->statistics.slice_max,
+			max((u64)schedstat_val(se->statistics.slice_max),
+			    se->sum_exec_runtime - se->prev_sum_exec_runtime));  // 本次在 CPU 上运行的预计时间
+	}
+
+	se->prev_sum_exec_runtime = se->sum_exec_runtime;
+}
+#+END_SRC
+** 处理周期性调度器
+由 task_tick_fair 负责。但实际工作由 enity_tick 完成。
+
+[[file:img/Snipaste_2019-01-11_14-15-58.png]]
+
+- update_curr : 更新统计量
+- 进程数不少于两个，由 check_preempt_tick 做出决策，目的是确保进程不比延迟周期中
+  确定的份额运行得更长。这个时间由前文得 sched_slice 计算得出。超过则通过
+  resched_task 进行重调度。
+** 唤醒抢占
+在 try_to_wake_up 和 wake_up_new_task 唤醒进程时，内核使用 check_preempt_curr 查
+看新进程是否可以抢占当前的进程。对于 CFS 调度器，则由 check_preempt_wakeup 执行
+检测。如果新唤醒的进程是一个实时进程，则会立即请求重调度，因为实时进程总会抢占
+CFS 进程。最简单的是批处理进程，它不抢占任何进程，直接返回。
+#+BEGIN_SRC C
+// https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/fair.c#L6813
+/*
+ * Preempt the current task with a newly woken task if needed:
+ */
+static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)
+{
+	struct task_struct *curr = rq->curr;
+	struct sched_entity *se = &curr->se, *pse = &p->se;
+	struct cfs_rq *cfs_rq = task_cfs_rq(curr);
+	int scale = cfs_rq->nr_running >= sched_nr_latency;
+	int next_buddy_marked = 0;
+
+	if (unlikely(se == pse))
+		return;
+...
+}
+#+END_SRC
+运行的进程被抢占至少运行一个最小时间间隔（由 sysctl_sched_wakeup_granularity 保
+障）。实际默认时间为4ms,因此子必要时转换为虚拟时间：
+#+BEGIN_SRC C
+// https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/fair.c#L6733
+static unsigned long wakeup_gran(struct sched_entity *se)
+{
+	unsigned long gran = sysctl_sched_wakeup_granularity;
+
+	/*
+	 * Since its curr running now, convert the gran from real-time
+	 * to virtual-time in his units.
+	 *
+	 * By using 'se' instead of 'curr' we penalize light tasks, so
+	 * they get preempted easier. That is, if 'se' < 'curr' then
+	 * the resulting gran will be larger, therefore penalizing the
+	 * lighter, if otoh 'se' > 'curr' then the resulting gran will
+	 * be smaller, again penalizing the lighter task.
+	 *
+	 * This is especially important for buddies when the leftmost
+	 * task is higher priority than the buddy.
+	 */
+	return calc_delta_fair(gran, se);
+}
+#+END_SRC
+如果新进程的虚拟运行时间，加上最小时间限额仍然小于执行进程的虚拟运行时间，则请求
+重调度。
+** 处理新进程
+CFS 调度器的最后一个操作是创建新进程的 hook 函数： task_fork_fair(早期为 task_new_fair). 行为可由参数
+sysctl_sched_child_runs_first 控制。判断是否先于父进程运行。默认值为1,可以提通过
+/proc/sys/kernel/sched_child_runs_first 修改。
+#+BEGIN_SRC C
+// https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/fair.c#L10051
+/*
+ * called on fork with the child task as argument from the parent's context
+ *  - child not yet on the tasklist
+ *  - preemption disabled
+ */
+static void task_fork_fair(struct task_struct *p)
+{
+	struct cfs_rq *cfs_rq;
+	struct sched_entity *se = &p->se, *curr;
+	struct rq *rq = this_rq();
+	struct rq_flags rf;
+
+	rq_lock(rq, &rf);
+	update_rq_clock(rq);
+
+	cfs_rq = task_cfs_rq(current);
+	curr = cfs_rq->curr;
+	if (curr) {
+		update_curr(cfs_rq);
+		se->vruntime = curr->vruntime;
+	}
+	place_entity(cfs_rq, se, 1);   // 参数 initial 设置为1 便于 sched_vslice 计算 vruntime
+
+	if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
+		/*
+		 * Upon rescheduling, sched_class::put_prev_task() will place
+		 * 'current' within the tree based on its new key value.
+		 */
+		swap(curr->vruntime, se->vruntime);  // 刚开始父进程 vruntime 小于子进程，红黑树重 vruntime 较小的靠左，容易被调度，因此交换可保证子进程先调度。
+		resched_curr(rq);
+	}
+
+	se->vruntime -= cfs_rq->min_vruntime;
+	rq_unlock(rq, &rf);
+}
+#+END_SRC
+* 实时调度类
+使得实时进程可以平滑地集成到内核中，无需修改调度器。通过 task_has_rt_policy 检测
+是否关联到实时调度策略。
+** 性质
+系统中有一个实时进程且可运行，调度器总会选择它，除非有一个优先级更高地实时进程。
+
+- 循环进程：有时间片，其值运行时会减少，行为像普通进程。
+- 先进先出进程：没有时间片，执行后可以运行任意长时间
+** 数据结构
+#+BEGIN_SRC c
+// https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/rt.c#L2373
+const struct sched_class rt_sched_class = {
+	.next			= &fair_sched_class,
+	.enqueue_task		= enqueue_task_rt,
+	.dequeue_task		= dequeue_task_rt,
+	.yield_task		= yield_task_rt,
+
+	.check_preempt_curr	= check_preempt_curr_rt,
+
+	.pick_next_task		= pick_next_task_rt,
+	.put_prev_task		= put_prev_task_rt,
+
+#ifdef CONFIG_SMP
+	.select_task_rq		= select_task_rq_rt,
+
+	.set_cpus_allowed       = set_cpus_allowed_common,
+	.rq_online              = rq_online_rt,
+	.rq_offline             = rq_offline_rt,
+	.task_woken		= task_woken_rt,
+	.switched_from		= switched_from_rt,
+#endif
+
+	.set_curr_task          = set_curr_task_rt,
+	.task_tick		= task_tick_rt,
+
+	.get_rr_interval	= get_rr_interval_rt,
+
+	.prio_changed		= prio_changed_rt,
+	.switched_to		= switched_to_rt,
+
+	.update_curr		= update_curr_rt,
+};
+#+END_SRC
+实时进程地就绪队列嵌入在核心调度器里面，实现也比较简单，直接使用链表：
+#+BEGIN_SRC c
+// https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/sched.h#L807
+struct rq {
+...
+  struct rt_rq rt;
+...
+}
+
+// https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/sched.h#L590
+/* Real-Time classes' related field in a runqueue: */
+struct rt_rq {
+	struct rt_prio_array	active;
+...
+}
+/*
+ * This is the priority-queue data structure of the RT scheduling class:
+ */
+struct rt_prio_array {
+	DECLARE_BITMAP(bitmap, MAX_RT_PRIO+1); /* include 1 bit for delimiter */
+	struct list_head queue[MAX_RT_PRIO];
+};
+#+END_SRC
+相同优先级地实时进程保存在一个链表中，表头为 active.que[prio] , 而 active.bitmap
+位图中的每个比特位对应于一个链表。
+
+[[file:img/Snipaste_2019-01-13_11-06-32.png]]
+
+update_curr_rt 对应于 update_curr 。该函数将在CPU上执行的花费时间记录在
+sum_exec_runtime 中，计算单位都是实际时间，不需要虚拟时间。
+** 调度器操作
+以 p->prio 为索引访问 queue[p->prio] , 即可访问到正确的链表，将进程加入或删除即
+可，新进程总是排在了表的后边。选择下一个进程流程：
+
+[[file:img/Snipaste_2019-01-13_11-46-52.png]]
+
+sched_find_first_bit 找到 active.bitmap 中第一个置位的比特位。
+
+SCHED_FIFO 进程最容易处理，可以运行任意长时间，且必须用 yield 系统调用将控制权显
+示传递给另一个进程。循环队列需要一种特殊的时间片管理。
+
+sced_setscheduler 系统调用将进程转换为实时进程
+* 调度器增强
+** SMP 调度
+多处理器上内核应该考虑人问题：
+
+- CPU 负荷必须尽可能地公平在所有处理器上共享
+- 进程与系统中的某些处理器的亲和性是可设置的
+- 内核必须能够将进程从一个 CPU 迁移到另一个，慎用，会严重危害性能
+*** 数据结构的扩展
+#+BEGIN_SRC c
+// https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/sched.h#L1653
+struct sched_class {
+...
+#ifdef CONFIG_SMP
+	int  (*select_task_rq)(struct task_struct *p, int task_cpu, int sd_flag, int flags);
+	void (*migrate_task_rq)(struct task_struct *p, int new_cpu);
+
+	void (*task_woken)(struct rq *this_rq, struct task_struct *task);
+
+	void (*set_cpus_allowed)(struct task_struct *p,
+				 const struct cpumask *newmask);
+
+	void (*rq_online)(struct rq *rq);
+	void (*rq_offline)(struct rq *rq);
+#endif /* CONFIG_SMP */
+...
+}
+
+https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/sched.h#L824
+struct rq {
+...
+#ifdef CONFIG_SMP
+	struct root_domain	*rd;
+	struct sched_domain	*sd;
+
+	unsigned long		cpu_capacity;
+	unsigned long		cpu_capacity_orig;
+
+	struct callback_head	*balance_callback;
+
+	unsigned char		idle_balance;
+
+	unsigned long		misfit_task_load;
+
+	/* For active balancing */
+	int			active_balance;
+	int			push_cpu;
+	struct cpu_stop_work	active_balance_work; // 用于主动均衡
+
+	/* CPU of this runqueue: */
+	int			cpu;         // 就绪的CPU
+	int			online;
+
+	struct list_head cfs_tasks;
+
+#endif /* CONFIG_SMP */
+...
+}
+#+END_SRC
+
+所有的就绪队列组织为调度域，将物理机上临近或共享到甘肃的CPU群集起来，应优先选择
+在这些CPU之间迁移进程。
+
+迁移进程时应注意的问题：
+
+- 目前没有运行或刚结束运行
+- 根据 CPU 亲和性，可以在与当前队列关联的处理器上执行
+*** 迁移线程
+目的：
+
+1. 完成调度器的迁移请求
+2. 实现主动均衡
+
+[[file:img/Snipaste_2019-01-14_11-05-25.png]]
+*** 核心调度器的改变
+- exec 启动新进程时调度器跨越 CPU 移动该进程的一个良好的时机，因为不会带来 CPU
+  高速缓存的负面效应。 exec 会调用 hook 函数 sched_exec:
+
+[[file:img/Snipaste_2019-01-14_11-13-14.png]]
+
+- 完全公平调度器的调度颗粒与 CPU 的数目成正比
+** 调度域和控制组
+除了按用户分组，内核还提供了控制组，通过 cgroups 创建任意的进程集合，甚至可以氛
+围多个层次：
+
+[[file:img/Snipaste_2019-01-14_11-25-16.png]]
+** 内核抢占和低延迟相关工作
+*** 内核抢占 
+内核抢占在2.5版本后出现的，当内核处于临界区时，必须停用内核抢占。每个特定于体系
+结构的 thread_info 实例都包含一个抢占计数器 =int preempte_count=
+
+当为 0 时候可以抢占，每进入一个临界区就自增(inc_preemtpt_count)，设置为 int , 是因为可能有嵌套临界资
+源访问。释放临界区自减(dec_preempt_count)。
+*** 低延迟
+内核中毫时长的操作不应该占据整个系统，应该不时地检测是否有另一个进程变位可运行，
+在必要地时候调用调度器选择相应地进程运行。如条件重调度函数 : cond_reshced
+#+BEGIN_SRC c
+// https://elixir.bootlin.com/linux/v5.0-rc1/source/kernel/sched/core.c#L4957
+int __sched _cond_resched(void)
+{
+	if (should_resched(0)) {
+		preempt_schedule_common();
+		return 1;
+	}
+	rcu_all_qs();
+	return 0;
+}
+#+END_SRC
+* 总结
+进程管理是操作系统重要任务之一，目的是按照某种调度策略对所有进程进行调度，从而实
+现多任务并发执行。
+
+本章节主要介绍了描述进程的相关数据结构，其中最重要的是 task_struct, 每个进程都对
+应一个 task_struct 实例。对于系统中的进程，调度器应该实现相对公平的选择运行的进
+程，这个公平决策需要使用优先级作为决策依据。优先级中值得注意的是， [0-99] 表示实
+时进程的优先级，越大优先级越高，超过100的为普通进程优先级，值越小优先级越高。这
+也说明，当一个进程优先级持续下降的时候有可能转为实时进程。优先级由静态优先级、动
+态优先级以及普通优先级，计算方法参考笔记。核心调度器是各种调度器类的封装，它是为
+进行类型以及体系结构无关的。调度器器类主要分为批处理调度类、完全公平调度类以及实
+时调度类。
